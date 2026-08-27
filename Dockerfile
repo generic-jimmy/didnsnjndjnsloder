@@ -1,14 +1,14 @@
 FROM node:24-alpine AS client-build
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm ci
+RUN npm install
 COPY client/ ./
 RUN npm run build
 
 FROM node:24-alpine
 WORKDIR /app
 COPY server/package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 COPY server/ ./
 COPY --from=client-build /app/client/dist ./client/dist
 ENV PORT=3000
