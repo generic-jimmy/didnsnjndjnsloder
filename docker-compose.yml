@@ -1,0 +1,16 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - server/.env
+    ulimits:
+      # Raise the file-descriptor limit so the process can hold thousands of
+      # concurrent agent WebSocket connections (each socket is one FD).
+      nofile:
+        soft: 65535
+        hard: 65535
+    restart: unless-stopped
