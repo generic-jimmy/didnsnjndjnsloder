@@ -22,6 +22,8 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production';
+// Pre-shared secret agents must present to auto-enroll (unknown tokens are rejected otherwise)
+const AGENT_ENROLL_SECRET = process.env.AGENT_ENROLL_SECRET || '';
 const OPERATOR_USERNAME = process.env.OPERATOR_USERNAME || 'admin';
 const OPERATOR_PASSWORD_HASH = process.env.OPERATOR_PASSWORD_HASH; // Store bcrypt hash of password
 // If no hash provided, create a default hash for 'password' at startup (for dev only)
@@ -160,9 +162,10 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
   const token = url.searchParams.get('token');
+  const enroll = url.searchParams.get('enroll');
 
   if (path === '/ws/agent') {
-    handleAgentConnection(ws, token);
+    handleAgentConnection(ws, token, enroll);
   } else if (path === '/ws/operator') {
     handleOperatorConnection(ws, token);
   } else {
@@ -171,7 +174,7 @@ wss.on('connection', (ws, req) => {
 });
 
 // Agent connection handling
-async function handleAgentConnection(ws, token) {
+async function handleAgentConnection(ws, token, enroll) {
   if (!token) {
     ws.close(4001, 'Missing token');
     return;
@@ -223,8 +226,24 @@ async function handleAgentConnection(ws, token) {
   }
 
   if (!agent) {
-    ws.close(4002, 'Invalid token');
-    return;
+    // Unknown token → auto-enroll ONLY if the pre-shared secret matches
+    if (!AGENT_ENROLL_SECRET || enroll !== AGENT_ENROLL_SECRET) {
+      ws.close(4002, 'Invalid token');
+      return;
+    }
+    try {
+      const inserted = await pool.query(
+        "INSERT INTO public.agents (agent_token, hostname, status) VALUES ($1, 'pending', 'offline') " +
+        "ON CONFLICT (agent_token) DO UPDATE SET agent_token = EXCLUDED.agent_token RETURNING *",
+        [token]
+      );
+      agent = inserted.rows[0];
+      console.log(`Agent auto-enrolled: ${token}`);
+    } catch (err) {
+      console.error('Agent enrollment error:', err);
+      ws.close(4002, 'Invalid token');
+      return;
+    }
   }
 
   agentConnections.set(agent.id, ws);

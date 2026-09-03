@@ -17,7 +17,7 @@ function localEcho(term, data) {
   }
 }
 
-function Terminal({ agent, sendToAgent, active, running }) {
+function Terminal({ agent, sendToAgent, active, running, connected }) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -117,14 +117,21 @@ function Terminal({ agent, sendToAgent, active, running }) {
     };
   }, [agent.id]); // Removed sendToAgent to prevent terminal destruction on function recreation
 
-  // Start/stop the remote shell session based on the `running` prop
+  // Start/stop the remote shell session based on the `running` prop, and
+  // RE-ESTABLISH it when the link comes back up (the agent clears its terminal
+  // session on disconnect, so we must re-send terminal_start after a reconnect).
   useEffect(() => {
-    if (running) {
+    if (running && connected) {
       sendToAgentRef.current({ action: 'terminal_start', agent_id: agent.id, shell: 'cmd' });
     } else {
       sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
     }
-  }, [running, agent.id]);
+    // Stop the shell when this effect tears down (agent switch / unmount),
+    // so switching agents doesn't leave an orphaned shell on the old agent.
+    return () => {
+      sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
+    };
+  }, [running, connected, agent.id]);
 
   // Replaced window resize with ResizeObserver for accurate component-level layout shifts
   useEffect(() => {

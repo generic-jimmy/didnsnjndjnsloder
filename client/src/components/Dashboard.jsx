@@ -8,7 +8,7 @@ function Dashboard({ token, onLogout }) {
   const [agents, setAgents] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [activeTab, setActiveTab] = useState('shell');
-  const [shellRunning, setShellRunning] = useState(false);
+  const [shellRunning, setShellRunning] = useState({}); // per-agent: { [agentId]: bool }
   const wsRef = useRef(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
@@ -132,6 +132,7 @@ function Dashboard({ token, onLogout }) {
   };
 
   const onlineCount = agents.filter((a) => a.status === 'online').length;
+  const shellIsRunning = !!selectedAgent && !!shellRunning[selectedAgent.id];
 
   return (
     <div className="dashboard">
@@ -213,12 +214,12 @@ function Dashboard({ token, onLogout }) {
                   </span>
                   <span className="panel-meta">cmd · {selectedAgent.hostname}</span>
                   <button
-                    className={`btn-shell-toggle ${shellRunning ? 'running' : ''}`}
-                    onClick={() => setShellRunning((v) => !v)}
-                    title={shellRunning ? 'Stop the background shell' : 'Start the background shell'}
+                    className={`btn-shell-toggle ${shellIsRunning ? 'running' : ''}`}
+                    onClick={() => setShellRunning((prev) => ({ ...prev, [selectedAgent.id]: !prev[selectedAgent.id] }))}
+                    title={shellIsRunning ? 'Stop the background shell' : 'Start the background shell'}
                   >
                     <span className="shell-toggle-dot" />
-                    {shellRunning ? 'Stop' : 'Start'}
+                    {shellIsRunning ? 'Stop' : 'Start'}
                   </button>
                 </div>
                 <div className="terminal-body">
@@ -226,7 +227,8 @@ function Dashboard({ token, onLogout }) {
                     agent={selectedAgent}
                     sendToAgent={sendToAgent}
                     active={activeTab === 'shell'}
-                    running={shellRunning}
+                    running={shellIsRunning}
+                    connected={wsConnected}
                   />
                 </div>
               </section>
