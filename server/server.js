@@ -36,7 +36,10 @@ if (!DATABASE_URL) {
 // Direct PostgreSQL connection (bypasses RLS; Supabase requires TLS)
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false }
+  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
+  // Max concurrent DB connections. Raise via DB_POOL_MAX to drain bursts faster
+  // (e.g. many agents reconnecting at once). Default 25.
+  max: parseInt(process.env.DB_POOL_MAX || '25', 10)
 });
 
 pool.on('error', (err) => {
@@ -66,7 +69,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!passwordMatch) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
-  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '1h' });
+  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '12h' });
   res.json({ token });
 });
 
@@ -314,6 +317,17 @@ function handleOperatorConnection(ws, token) {
     ws.close(4003, 'Invalid token');
   }
 }
+
+// Reset any stale 'online' statuses left over from a previous run or crash
+// (agents whose connection died without a clean close would otherwise stay online)
+(async () => {
+  try {
+    await pool.query("UPDATE public.agents SET status = 'offline' WHERE status = 'online'");
+    console.log('Reset stale agent statuses to offline');
+  } catch (err) {
+    console.error('Failed to reset agent statuses:', err.message);
+  }
+})();
 
 // ---------- Start server ----------
 server.listen(PORT, () => {

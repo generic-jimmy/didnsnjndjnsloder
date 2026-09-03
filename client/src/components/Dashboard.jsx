@@ -16,43 +16,80 @@ function Dashboard({ token, onLogout }) {
   );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const w = parseInt(localStorage.getItem('rto.sidebar.width') || '', 10);
-    return Number.isFinite(w) && w >= 220 ? w : 310;
+    return Number.isFinite(w) && w >= 200 ? w : 280;
   });
   const sidebarWidthRef = useRef(sidebarWidth);
   const dragState = useRef(null);
+  const onLogoutRef = useRef(onLogout);
+  useEffect(() => {
+    onLogoutRef.current = onLogout;
+  }, [onLogout]);
 
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
   }, [sidebarWidth]);
 
   useEffect(() => {
-    // Fetch initial agent list
-    api.get('/agents').then((res) => setAgents(res.data)).catch(console.error);
+    let disposed = false;   // prevents reconnect attempts after unmount / token change
+    let ws = null;
+    let retries = 0;
+    let timer = null;
 
-    // Connect WebSocket for operator
-    const wsUrl = `${window.location.origin.replace(/^http/, 'ws')}/ws/operator?token=${token}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'agent_status') {
-        setAgents((prev) =>
-          prev.map((a) =>
-            a.id === msg.agent.id ? { ...a, status: msg.agent.status, ...msg.agent } : a
-          )
-        );
-      } else if (msg.type === 'terminal_output' || msg.type === 'script_result') {
-        // If we have a callback for output, handle it in child components
-        // We'll pass a callback via context or props
-        // For simplicity, we'll dispatch a custom event
-        window.dispatchEvent(new CustomEvent('agent-message', { detail: msg }));
-      }
+    const fetchAgents = () => {
+      api.get('/agents').then((res) => setAgents(res.data)).catch(console.error);
     };
 
-    return () => ws.close();
+    const connect = () => {
+      if (disposed) return;
+      const wsUrl = `${window.location.origin.replace(/^http/, 'ws')}/ws/operator?token=${token}`;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        retries = 0;
+        setWsConnected(true);
+        // Re-sync the agent list on every (re)connect so statuses aren't stale
+        fetchAgents();
+      };
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'agent_status') {
+          setAgents((prev) =>
+            prev.map((a) =>
+              a.id === msg.agent.id ? { ...a, status: msg.agent.status, ...msg.agent } : a
+            )
+          );
+        } else if (msg.type === 'terminal_output' || msg.type === 'script_result') {
+          // Pass to child components (Terminal / ScriptRunner) via a custom event
+          window.dispatchEvent(new CustomEvent('agent-message', { detail: msg }));
+        }
+      };
+      ws.onclose = (event) => {
+        setWsConnected(false);
+        if (disposed) return;
+        // 4003 = invalid/expired token — stop retrying and force re-auth
+        if (event.code === 4003) {
+          onLogoutRef.current();
+          return;
+        }
+        // Exponential backoff: 1s, 2s, 4s, 8s ... capped at 15s
+        const delay = Math.min(1000 * 2 ** retries, 15000);
+        retries += 1;
+        timer = setTimeout(connect, delay);
+      };
+      ws.onerror = () => {
+        try { ws.close(); } catch (e) { /* noop */ }
+      };
+    };
+
+    fetchAgents(); // initial load
+    connect();     // then keep the link alive automatically
+
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      if (ws) ws.close();
+    };
   }, [token]);
 
   const sendToAgent = (message) => {
@@ -72,7 +109,7 @@ function Dashboard({ token, onLogout }) {
   const onResizeMove = (e) => {
     const d = dragState.current;
     if (!d) return;
-    const min = 220;
+    const min = 200;
     const max = Math.max(min, Math.floor(window.innerWidth * 0.5));
     const next = Math.min(max, Math.max(min, d.startWidth + (e.clientX - d.startX)));
     setSidebarWidth(next);

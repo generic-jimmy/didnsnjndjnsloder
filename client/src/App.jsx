@@ -13,6 +13,13 @@ function App() {
     }
   }, [token]);
 
+  // Any API 401/403 (expired/invalid token) forces a clean logout to the login screen
+  useEffect(() => {
+    const onAuthExpired = () => setToken(null);
+    window.addEventListener('auth-expired', onAuthExpired);
+    return () => window.removeEventListener('auth-expired', onAuthExpired);
+  }, []);
+
   const handleLogout = () => {
     setToken(null);
   };

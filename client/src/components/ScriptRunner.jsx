@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import api from '../api';
 
@@ -8,11 +8,25 @@ function ScriptRunner({ agents, sendToAgent }) {
   const [scriptName, setScriptName] = useState('');
   const [output, setOutput] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState(agents.map(a => a.id));
+  const editorRef = useRef(null);
 
   // Update selected agents when prop changes
-  React.useEffect(() => {
+  useEffect(() => {
     setSelectedAgentIds(agents.map(a => a.id));
   }, [agents]);
+
+  // Capture script results for the whole lifetime of this component, so
+  // long-running scripts don't lose their output (was a 30s timeout before).
+  useEffect(() => {
+    const handler = (event) => {
+      const msg = event.detail;
+      if (msg?.type === 'script_result' && selectedAgentIds.includes(msg.agent_id)) {
+        setOutput((prev) => prev + `\n[${msg.agent_id}] ${msg.data?.output ?? ''}`);
+      }
+    };
+    window.addEventListener('agent-message', handler);
+    return () => window.removeEventListener('agent-message', handler);
+  }, [selectedAgentIds]);
 
   const runScript = () => {
     if (!scriptContent.trim()) return;
@@ -22,16 +36,6 @@ function ScriptRunner({ agents, sendToAgent }) {
       language,
       content: scriptContent
     });
-    // Listen for results
-    const handler = (event) => {
-      const msg = event.detail;
-      if (msg.type === 'script_result' && selectedAgentIds.includes(msg.agent_id)) {
-        setOutput((prev) => prev + `\n[${msg.agent_id}] ${msg.data.output}`);
-      }
-    };
-    window.addEventListener('agent-message', handler);
-    // Clean up listener after some time (or keep it)
-    setTimeout(() => window.removeEventListener('agent-message', handler), 30000);
   };
 
   const saveScript = async () => {
@@ -67,11 +71,15 @@ function ScriptRunner({ agents, sendToAgent }) {
       </div>
       <div className="editor-wrap">
         <Editor
-          height="280px"
+          height="220px"
           language={language === 'powershell' ? 'powershell' : 'vb'}
           value={scriptContent}
           onChange={setScriptContent}
           theme="vs-dark"
+          onMount={(editor) => {
+            editorRef.current = editor;
+            editor.focus();
+          }}
         />
       </div>
       <div className="output">
