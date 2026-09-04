@@ -8,17 +8,15 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
   const isInitialized = useRef(false);
-  const lineRef = useRef(''); // tracks the current typed line for cls/clear detection
+  const lineRef = useRef('');
 
-  // Maintain latest reference to prevent useEffect teardown loops if parent re-renders
   const sendToAgentRef = useRef(sendToAgent);
   useEffect(() => {
     sendToAgentRef.current = sendToAgent;
   }, [sendToAgent]);
 
-  // Mount the xterm instance once (independent of session start/stop)
+  // Mount xterm once
   useEffect(() => {
-    // Prevent React 18 Strict Mode double-mounting bugs
     if (!terminalRef.current || isInitialized.current) return;
     isInitialized.current = true;
 
@@ -33,7 +31,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
         selectionBackground: 'rgba(34, 211, 238, 0.3)'
       }
     });
-    
+
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(terminalRef.current);
@@ -46,42 +44,36 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
         rows: term.rows
       });
     };
-    
-    // Defer initial fit + focus to ensure container dimensions are calculated
+
     requestAnimationFrame(() => {
       fitAddon.fit();
       term.focus();
       sendSize();
     });
-    
+
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
     const handleAgentMessage = (event) => {
       const msg = event.detail;
-      
       if (msg?.agent_id === agent.id && msg?.type === 'terminal_output') {
-        // Safe extraction wrapper depending on C2 object nesting layers
         const rawText = msg.data?.data || msg.data;
         if (rawText) {
           const buffer = term.buffer.active;
           const atBottom = buffer.viewY >= buffer.baseY;
-          
           term.write(rawText);
-          
           if (atBottom) {
             requestAnimationFrame(() => term.scrollToBottom());
           }
         }
       }
     };
-    
     window.addEventListener('agent-message', handleAgentMessage);
 
     const dataDisposable = term.onData((data) => {
-      // Local Echo removed completely. ConPTY echoes automatically.
-      
-      // Track the line context strictly for clearing operations
+      // Temporary debug log – remove after confirming keystrokes are captured
+      console.log('Keystroke data:', data);
+
       for (const ch of data) {
         if (ch === '\r') {
           const cmd = lineRef.current.trim().toLowerCase();
@@ -95,9 +87,12 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
           lineRef.current += ch;
         }
       }
-      
-      // Send key events straight to backend C2 router
-      sendToAgentRef.current({ action: 'terminal_input', agent_id: agent.id, data });
+
+      sendToAgentRef.current({
+        action: 'terminal_input',
+        agent_id: agent.id,
+        data
+      });
     });
 
     const resizeDisposable = term.onResize(() => sendSize());
@@ -109,47 +104,47 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
       term.dispose();
       isInitialized.current = false;
     };
-  }, [agent.id]); // Removed sendToAgent to prevent terminal destruction on function recreation
+  }, [agent.id]);
 
-  // Start/stop the remote shell session based on the `running` prop, and
-  // RE-ESTABLISH it when the link comes back up (the agent clears its terminal
-  // session on disconnect, so we must re-send terminal_start after a reconnect).
+  // Start/stop shell
   useEffect(() => {
     if (running && connected) {
       sendToAgentRef.current({ action: 'terminal_start', agent_id: agent.id, shell: 'cmd' });
     } else {
       sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
     }
-    // Stop the shell when this effect tears down (agent switch / unmount),
-    // so switching agents doesn't leave an orphaned shell on the old agent.
     return () => {
       sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
     };
   }, [running, connected, agent.id]);
 
-  // Replaced window resize with ResizeObserver for accurate component-level layout shifts
+  // Ensure focus when terminal becomes active or running
+  useEffect(() => {
+    if (active && running && connected && xtermRef.current) {
+      const focusTimer = setTimeout(() => {
+        xtermRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(focusTimer);
+    }
+  }, [active, running, connected]);
+
+  // Resize observer
   useEffect(() => {
     if (!terminalRef.current) return;
-
     const observer = new ResizeObserver(() => {
       if (fitAddonRef.current && xtermRef.current?.element) {
         requestAnimationFrame(() => {
           try {
             fitAddonRef.current.fit();
-          } catch (e) {
-            // Suppress fit errors during rapid unmounts
-          }
+          } catch (e) {}
         });
       }
     });
-
     observer.observe(terminalRef.current);
-    
     return () => observer.disconnect();
   }, []);
 
-  // Re-fit + focus + report size when the shell tab becomes visible again.
-  // Fixes distortion caused by fitting while the panel was hidden (display:none).
+  // Re-fit when active changes
   useEffect(() => {
     if (!active || !xtermRef.current) return;
     const raf = requestAnimationFrame(() => {
@@ -162,19 +157,19 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
           cols: xtermRef.current.cols,
           rows: xtermRef.current.rows
         });
-      } catch (e) {
-        // suppress if the terminal is disposed mid-frame
-      }
+      } catch (e) {}
     });
     return () => cancelAnimationFrame(raf);
   }, [active, agent.id]);
 
   return (
-    <div 
-      ref={terminalRef} 
-      className="terminal" 
-      style={{ width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }} 
+    <div
+      ref={terminalRef}
+      className="terminal"
+      style={{ width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }}
+      tabIndex={0}
       onClick={() => xtermRef.current?.focus()}
+      onFocus={() => xtermRef.current?.focus()}
     />
   );
 }
