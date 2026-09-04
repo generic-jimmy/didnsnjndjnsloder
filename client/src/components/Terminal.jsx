@@ -8,12 +8,44 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
   const isInitialized = useRef(false);
-  const lineRef = useRef('');
 
   const sendToAgentRef = useRef(sendToAgent);
   useEffect(() => {
     sendToAgentRef.current = sendToAgent;
   }, [sendToAgent]);
+
+  // Fit + notify the agent of the new size in one place, with guards
+  // against fitting a hidden / zero-size container (this was previously
+  // silently swallowed, which is why a bad fit could go undetected and
+  // leave the backend PTY at the wrong cols/rows -> wrapped/garbled output).
+  const fitAndSync = (force = false) => {
+    const el = terminalRef.current;
+    const term = xtermRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!el || !term || !fitAddon) return;
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) return; // not visible, skip
+
+    const prevCols = term.cols;
+    const prevRows = term.rows;
+    try {
+      fitAddon.fit();
+    } catch (e) {
+      console.error('Terminal fit failed:', e);
+      return;
+    }
+
+    // Explicitly send size whenever we asked for a fit, instead of relying
+    // solely on term.onResize firing (fit() only fires that event when the
+    // computed cols/rows actually change, which can mask a stale backend size).
+    if (force || term.cols !== prevCols || term.rows !== prevRows) {
+      sendToAgentRef.current({
+        action: 'terminal_resize',
+        agent_id: agent.id,
+        cols: term.cols,
+        rows: term.rows
+      });
+    }
+  };
 
   // Mount xterm once
   useEffect(() => {
@@ -36,23 +68,14 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     term.loadAddon(fitAddon);
     term.open(terminalRef.current);
 
-    const sendSize = () => {
-      sendToAgentRef.current({
-        action: 'terminal_resize',
-        agent_id: agent.id,
-        cols: term.cols,
-        rows: term.rows
-      });
-    };
-
-    requestAnimationFrame(() => {
-      fitAddon.fit();
-      term.focus();
-      sendSize();
-    });
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
+
+    requestAnimationFrame(() => {
+      fitAndSync(true);
+      // Only steal focus on mount if this terminal is actually the visible one.
+      if (active) term.focus();
+    });
 
     const handleAgentMessage = (event) => {
       const msg = event.detail;
@@ -60,34 +83,29 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
         const rawText = msg.data?.data || msg.data;
         if (rawText) {
           const buffer = term.buffer.active;
-          const atBottom = buffer.viewY >= buffer.baseY;
-          term.write(rawText);
-          if (atBottom) {
-            requestAnimationFrame(() => term.scrollToBottom());
-          }
+          // Fixed: xterm's IBuffer property is `viewportY`, not `viewY`.
+          // The old code referenced a nonexistent property, so `atBottom`
+          // was always false and autoscroll never ran.
+          const atBottom = buffer.viewportY >= buffer.baseY;
+          term.write(rawText, () => {
+            // Scroll after the write has actually been processed, not just
+            // queued, so we scroll to where the content really ends up.
+            if (atBottom) term.scrollToBottom();
+          });
         }
       }
     };
     window.addEventListener('agent-message', handleAgentMessage);
 
+    // NOTE: removed the client-side "shadow" line buffer that tried to
+    // detect `cls`/`clear` and locally call term.clear(). It had no way to
+    // track arrow keys, ctrl sequences, tab-completion or pasted text, so it
+    // would drift out of sync with the real shell state, and calling
+    // term.clear() locally raced with the backend's own output for the same
+    // command, causing flicker/partial redraws. The backend PTY is the
+    // source of truth for what the screen should contain; input is now a
+    // pure passthrough.
     const dataDisposable = term.onData((data) => {
-      // Temporary debug log – remove after confirming keystrokes are captured
-      console.log('Keystroke data:', data);
-
-      for (const ch of data) {
-        if (ch === '\r') {
-          const cmd = lineRef.current.trim().toLowerCase();
-          if (cmd === 'cls' || cmd === 'clear') {
-            term.clear();
-          }
-          lineRef.current = '';
-        } else if (ch === '\x7f' || ch === '\b') {
-          lineRef.current = lineRef.current.slice(0, -1);
-        } else if (ch >= ' ' && ch !== '\x1b') {
-          lineRef.current += ch;
-        }
-      }
-
       sendToAgentRef.current({
         action: 'terminal_input',
         agent_id: agent.id,
@@ -95,28 +113,55 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
       });
     });
 
-    const resizeDisposable = term.onResize(() => sendSize());
+    const resizeDisposable = term.onResize(() => {
+      const t = xtermRef.current;
+      if (!t) return;
+      sendToAgentRef.current({
+        action: 'terminal_resize',
+        agent_id: agent.id,
+        cols: t.cols,
+        rows: t.rows
+      });
+    });
 
     return () => {
       window.removeEventListener('agent-message', handleAgentMessage);
       dataDisposable.dispose();
       resizeDisposable.dispose();
       term.dispose();
+      xtermRef.current = null;
+      fitAddonRef.current = null;
       isInitialized.current = false;
     };
   }, [agent.id]);
 
-  // Start/stop shell
+  // Start/stop shell. Track the previous running/connected pair so a brief
+  // `connected` flicker (e.g. a momentary websocket hiccup) doesn't tear
+  // down and restart the shell — that restart window is a real cause of
+  // "sometimes I can't type", since input sent while the shell is mid-
+  // restart gets dropped.
+  const prevShellState = useRef({ running: null, connected: null });
   useEffect(() => {
-    if (running && connected) {
+    const shouldRun = running && connected;
+    const prevShouldRun =
+      prevShellState.current.running && prevShellState.current.connected;
+
+    if (shouldRun && !prevShouldRun) {
       sendToAgentRef.current({ action: 'terminal_start', agent_id: agent.id, shell: 'cmd' });
-    } else {
+    } else if (!shouldRun && prevShouldRun) {
       sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
     }
+
+    prevShellState.current = { running, connected };
+  }, [running, connected, agent.id]);
+
+  // True unmount cleanup only.
+  useEffect(() => {
     return () => {
       sendToAgentRef.current({ action: 'terminal_stop', agent_id: agent.id });
     };
-  }, [running, connected, agent.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
 
   // Ensure focus when terminal becomes active or running
   useEffect(() => {
@@ -128,17 +173,11 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     }
   }, [active, running, connected]);
 
-  // Resize observer
+  // Resize observer — guarded fit + explicit sync (see fitAndSync above).
   useEffect(() => {
     if (!terminalRef.current) return;
     const observer = new ResizeObserver(() => {
-      if (fitAddonRef.current && xtermRef.current?.element) {
-        requestAnimationFrame(() => {
-          try {
-            fitAddonRef.current.fit();
-          } catch (e) {}
-        });
-      }
+      requestAnimationFrame(() => fitAndSync());
     });
     observer.observe(terminalRef.current);
     return () => observer.disconnect();
@@ -148,16 +187,8 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
   useEffect(() => {
     if (!active || !xtermRef.current) return;
     const raf = requestAnimationFrame(() => {
-      try {
-        fitAddonRef.current?.fit();
-        xtermRef.current?.focus();
-        sendToAgentRef.current({
-          action: 'terminal_resize',
-          agent_id: agent.id,
-          cols: xtermRef.current.cols,
-          rows: xtermRef.current.rows
-        });
-      } catch (e) {}
+      fitAndSync(true);
+      xtermRef.current?.focus();
     });
     return () => cancelAnimationFrame(raf);
   }, [active, agent.id]);
@@ -167,7 +198,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
       ref={terminalRef}
       className="terminal"
       style={{ width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }}
-      tabIndex={0}
+      tabIndex={active ? 0 : -1}
       onClick={() => xtermRef.current?.focus()}
       onFocus={() => xtermRef.current?.focus()}
     />
