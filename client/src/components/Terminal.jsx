@@ -3,20 +3,6 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-// Local echo for pipe-based shells (cmd/PowerShell don't echo input over pipes).
-// Prints printable chars, treats Enter/backspace visually, ignores control/ANSI.
-function localEcho(term, data) {
-  for (const ch of data) {
-    if (ch === '\r') {
-      term.write('\r\n');
-    } else if (ch === '\x7f' || ch === '\b') {
-      term.write('\b \b');
-    } else if (ch >= ' ' && ch !== '\x1b') {
-      term.write(ch);
-    }
-  }
-}
-
 function Terminal({ agent, sendToAgent, active, running, connected }) {
   const terminalRef = useRef(null);
   const xtermRef = useRef(null);
@@ -73,14 +59,19 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
 
     const handleAgentMessage = (event) => {
       const msg = event.detail;
-      // Added defensive chaining to prevent crashes on malformed events
-      if (msg?.agent_id === agent.id && msg?.type === 'terminal_output' && msg?.data?.data) {
-        const buffer = term.buffer.active;
-        const atBottom = buffer.viewY >= buffer.baseY;
-        term.write(msg.data.data);
-        // Auto-scroll to the latest output when the view is already at the bottom
-        if (atBottom) {
-          requestAnimationFrame(() => term.scrollToBottom());
+      
+      if (msg?.agent_id === agent.id && msg?.type === 'terminal_output') {
+        // Safe extraction wrapper depending on C2 object nesting layers
+        const rawText = msg.data?.data || msg.data;
+        if (rawText) {
+          const buffer = term.buffer.active;
+          const atBottom = buffer.viewY >= buffer.baseY;
+          
+          term.write(rawText);
+          
+          if (atBottom) {
+            requestAnimationFrame(() => term.scrollToBottom());
+          }
         }
       }
     };
@@ -88,8 +79,9 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     window.addEventListener('agent-message', handleAgentMessage);
 
     const dataDisposable = term.onData((data) => {
-      localEcho(term, data);
-      // Track the line being typed so a submitted 'cls'/'clear' clears the screen
+      // Local Echo removed completely. ConPTY echoes automatically.
+      
+      // Track the line context strictly for clearing operations
       for (const ch of data) {
         if (ch === '\r') {
           const cmd = lineRef.current.trim().toLowerCase();
@@ -103,6 +95,8 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
           lineRef.current += ch;
         }
       }
+      
+      // Send key events straight to backend C2 router
       sendToAgentRef.current({ action: 'terminal_input', agent_id: agent.id, data });
     });
 
