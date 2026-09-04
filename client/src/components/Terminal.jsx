@@ -47,7 +47,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
 
     requestAnimationFrame(() => {
       fitAddon.fit();
-      term.focus();
+      term.focus();  // focus once after mount
       sendSize();
     });
 
@@ -116,16 +116,6 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     };
   }, [running, connected, agent.id]);
 
-  // Ensure focus when terminal becomes active or running
-  useEffect(() => {
-    if (active && running && connected && xtermRef.current) {
-      const focusTimer = setTimeout(() => {
-        xtermRef.current?.focus();
-      }, 100);
-      return () => clearTimeout(focusTimer);
-    }
-  }, [active, running, connected]);
-
   // Resize observer
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -148,7 +138,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     const raf = requestAnimationFrame(() => {
       try {
         fitAddonRef.current?.fit();
-        xtermRef.current?.focus();
+        xtermRef.current?.focus();  // focus when tab becomes active
         sendToAgentRef.current({
           action: 'terminal_resize',
           agent_id: agent.id,
@@ -160,14 +150,17 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     return () => cancelAnimationFrame(raf);
   }, [active, agent.id]);
 
+  // Simple click handler to focus the terminal
+  const handleClick = () => {
+    xtermRef.current?.focus();
+  };
+
   return (
     <div
       ref={terminalRef}
       className="terminal"
       style={{ width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }}
-      tabIndex={0}
-      onClick={() => xtermRef.current?.focus()}
-      onFocus={() => xtermRef.current?.focus()}
+      onClick={handleClick}
     />
   );
 }
