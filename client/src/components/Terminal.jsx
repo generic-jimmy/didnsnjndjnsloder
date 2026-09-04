@@ -71,9 +71,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     window.addEventListener('agent-message', handleAgentMessage);
 
     const dataDisposable = term.onData((data) => {
-      // Temporary debug log – remove after confirming keystrokes are captured
-      console.log('Keystroke data:', data);
-
+      // Track line for cls/clear detection only
       for (const ch of data) {
         if (ch === '\r') {
           const cmd = lineRef.current.trim().toLowerCase();
