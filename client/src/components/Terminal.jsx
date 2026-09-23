@@ -8,6 +8,13 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
   const isInitialized = useRef(false);
+  // NEW: has xterm actually been open()ed on a VISIBLE container?
+  const hasOpened = useRef(false);
+  // NEW: output that arrives before the terminal is visible gets buffered
+  // here and flushed right after open(), so early shell output is never lost.
+  const pendingWrites = useRef([]);
+  // NEW: cancel handle for the deferred-open retry loop
+  const openRetry = useRef(null);
 
   const sendToAgentRef = useRef(sendToAgent);
   useEffect(() => {
@@ -23,6 +30,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     const term = xtermRef.current;
     const fitAddon = fitAddonRef.current;
     if (!el || !term || !fitAddon) return;
+    if (!hasOpened.current) return;
     if (el.offsetWidth === 0 || el.offsetHeight === 0) return; // not visible, skip
 
     const prevCols = term.cols;
@@ -47,10 +55,24 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     }
   };
 
-  // Mount xterm once
+  // ====================================================================
+  // BUG FIX — "terminal sometimes doesn't show":
+  // Both panels stay mounted and are toggled with `.panel.hidden
+  // { display: none }`. The old code called term.open() in the mount
+  // effect, so any mount that happened while the panel was hidden
+  // (e.g. selecting a new agent while on the Script tab) attached xterm
+  // to a 0x0 display:none container. The renderer never attaches and the
+  // terminal stays blank forever — even after switching back to the tab.
+  //
+  // FIX: create the Terminal instance on mount, but DEFER term.open()
+  // until the panel is actually visible (active && measurable size),
+  // with a short retry loop for the frame where CSS finishes applying.
+  // ====================================================================
   useEffect(() => {
     if (!terminalRef.current || isInitialized.current) return;
     isInitialized.current = true;
+    hasOpened.current = false;
+    pendingWrites.current = [];
 
     const term = new XTerm({
       cursorBlink: true,
@@ -66,30 +88,50 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.open(terminalRef.current);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    requestAnimationFrame(() => {
+    // Deferred open: wait until the container is visible, then open, flush
+    // buffered output, fit and focus. Retries a few frames because the
+    // display switch may land a frame after `active` flips.
+    const tryOpen = (attemptsLeft) => {
+      const el = terminalRef.current;
+      if (!el || hasOpened.current) return;
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) {
+        if (attemptsLeft > 0) {
+          openRetry.current = requestAnimationFrame(() => tryOpen(attemptsLeft - 1));
+        }
+        return; // still hidden — will re-arm when `active` changes
+      }
+      term.open(el);
+      hasOpened.current = true;
+      // Flush anything the agent sent before the terminal became visible
+      for (const chunk of pendingWrites.current) term.write(chunk);
+      pendingWrites.current = [];
       fitAndSync(true);
-      // Only steal focus on mount if this terminal is actually the visible one.
       if (active) term.focus();
-    });
+    };
+
+    // If the panel is visible right now, open on the next frame; otherwise
+    // the [active] effect below re-arms the retry when the tab is shown.
+    openRetry.current = requestAnimationFrame(() => tryOpen(30));
 
     const handleAgentMessage = (event) => {
       const msg = event.detail;
       if (msg?.agent_id === agent.id && msg?.type === 'terminal_output') {
         const rawText = msg.data?.data || msg.data;
         if (rawText) {
+          if (!hasOpened.current) {
+            // Terminal not visible yet — buffer, flush after open()
+            pendingWrites.current.push(rawText);
+            if (pendingWrites.current.length > 500) pendingWrites.current.shift();
+            return;
+          }
           const buffer = term.buffer.active;
           // Fixed: xterm's IBuffer property is `viewportY`, not `viewY`.
-          // The old code referenced a nonexistent property, so `atBottom`
-          // was always false and autoscroll never ran.
           const atBottom = buffer.viewportY >= buffer.baseY;
           term.write(rawText, () => {
-            // Scroll after the write has actually been processed, not just
-            // queued, so we scroll to where the content really ends up.
             if (atBottom) term.scrollToBottom();
           });
         }
@@ -97,14 +139,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     };
     window.addEventListener('agent-message', handleAgentMessage);
 
-    // NOTE: removed the client-side "shadow" line buffer that tried to
-    // detect `cls`/`clear` and locally call term.clear(). It had no way to
-    // track arrow keys, ctrl sequences, tab-completion or pasted text, so it
-    // would drift out of sync with the real shell state, and calling
-    // term.clear() locally raced with the backend's own output for the same
-    // command, causing flicker/partial redraws. The backend PTY is the
-    // source of truth for what the screen should contain; input is now a
-    // pure passthrough.
+    // Input is a pure passthrough — the backend PTY is the source of truth.
     const dataDisposable = term.onData((data) => {
       sendToAgentRef.current({
         action: 'terminal_input',
@@ -115,7 +150,7 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
 
     const resizeDisposable = term.onResize(() => {
       const t = xtermRef.current;
-      if (!t) return;
+      if (!t || !hasOpened.current) return;
       sendToAgentRef.current({
         action: 'terminal_resize',
         agent_id: agent.id,
@@ -128,10 +163,13 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
       window.removeEventListener('agent-message', handleAgentMessage);
       dataDisposable.dispose();
       resizeDisposable.dispose();
+      if (openRetry.current) cancelAnimationFrame(openRetry.current);
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
       isInitialized.current = false;
+      hasOpened.current = false;
+      pendingWrites.current = [];
     };
   }, [agent.id]);
 
@@ -163,6 +201,27 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
+  // When the tab becomes visible, finish opening (if deferred) and re-fit.
+  useEffect(() => {
+    if (!active) return;
+    const raf = requestAnimationFrame(() => {
+      if (xtermRef.current && !hasOpened.current) {
+        // Panel just became visible — run the deferred open now
+        const el = terminalRef.current;
+        if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+          const term = xtermRef.current;
+          term.open(el);
+          hasOpened.current = true;
+          for (const chunk of pendingWrites.current) term.write(chunk);
+          pendingWrites.current = [];
+        }
+      }
+      fitAndSync(true);
+      xtermRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [active, agent.id]);
+
   // Ensure focus when terminal becomes active or running
   useEffect(() => {
     if (active && running && connected && xtermRef.current) {
@@ -183,25 +242,34 @@ function Terminal({ agent, sendToAgent, active, running, connected }) {
     return () => observer.disconnect();
   }, []);
 
-  // Re-fit when active changes
-  useEffect(() => {
-    if (!active || !xtermRef.current) return;
-    const raf = requestAnimationFrame(() => {
-      fitAndSync(true);
-      xtermRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [active, agent.id]);
+  // Overlay state: never leave the operator staring at a mysterious void.
+  let overlay = null;
+  if (!connected) {
+    overlay = { cls: 'warn', text: '⚡ Link down — reconnecting to server…' };
+  } else if (agent.status === 'offline' || agent.status === 'banned') {
+    overlay = { cls: 'warn', text: agent.status === 'banned'
+      ? '⛔ Agent is banned — terminal disabled'
+      : '⏸ Agent offline — waiting for it to come back…' };
+  } else if (!hasOpened.current && !running) {
+    overlay = { cls: 'info', text: '▶ Press Start to launch the shell' };
+  }
 
   return (
-    <div
-      ref={terminalRef}
-      className="terminal"
-      style={{ width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }}
-      tabIndex={active ? 0 : -1}
-      onClick={() => xtermRef.current?.focus()}
-      onFocus={() => xtermRef.current?.focus()}
-    />
+    <div className="terminal-wrap" style={{ position: 'relative', width: '100%', height: '100%', minHeight: '300px', overflow: 'hidden' }}>
+      <div
+        ref={terminalRef}
+        className={`terminal ${overlay ? 'terminal-dim' : ''}`}
+        style={{ width: '100%', height: '100%' }}
+        tabIndex={active ? 0 : -1}
+        onClick={() => xtermRef.current?.focus()}
+        onFocus={() => xtermRef.current?.focus()}
+      />
+      {overlay && (
+        <div className={`terminal-overlay ${overlay.cls}`} onClick={() => xtermRef.current?.focus()}>
+          <span>{overlay.text}</span>
+        </div>
+      )}
+    </div>
   );
 }
 

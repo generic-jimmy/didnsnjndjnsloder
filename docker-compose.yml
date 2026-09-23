@@ -2,7 +2,7 @@ services:
   server:
     build:
       context: .
-      dockerfile: server/Dockerfile
+      dockerfile: Dockerfile  # FIX: Dockerfile is at repo root, not server/
     ports:
       - "3000:3000"
     env_file:

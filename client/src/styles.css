@@ -803,3 +803,204 @@ body.resizing .sidebar { transition: none; }
   .terminal-panel { min-height: 50vh; }
 }
 
+
+/* ============================================================
+   v2 UPGRADE — country flags, agent details, ban controls,
+   terminal overlays, script targets, activity feed
+   (appended; everything above is the original theme)
+   ============================================================ */
+
+/* ---------- status dots / badges for new states ---------- */
+.status-dot.banned { background: var(--amber); box-shadow: 0 0 8px rgba(251, 191, 36, 0.7); }
+.agent-badge.banned { color: var(--amber); background: rgba(251, 191, 36, 0.14); }
+.agent-badge.offline, .agent-card.is-banned .agent-host { opacity: 0.85; }
+.agent-card.is-banned { border-style: dashed; }
+.stat-value.banned { color: var(--amber); }
+
+/* ---------- agent list: flag, os, last seen, actions ---------- */
+.agent-flag { font-size: 1rem; line-height: 1; filter: saturate(1.15); }
+.agent-os-line { display: inline-flex; align-items: center; gap: 0.3rem; }
+.agent-os-icon { font-size: 0.82rem; }
+.agent-seen { color: var(--muted); }
+.agent-actions {
+  display: flex; gap: 0.3rem; margin-top: 0.45rem; justify-content: flex-end;
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.agent-card:hover .agent-actions,
+.agent-card.selected .agent-actions { opacity: 1; }
+.agent-btn {
+  font: 600 0.62rem var(--sans);
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.agent-btn:hover { filter: brightness(1.25); }
+.agent-btn:active { transform: translateY(1px); }
+.agent-btn.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
+.agent-btn.danger { color: var(--red); border-color: rgba(248, 113, 113, 0.4); }
+.agent-btn.ok { color: var(--green); border-color: rgba(52, 211, 153, 0.4); }
+
+/* ---------- link-down notice strip ---------- */
+.link-notice {
+  position: fixed; top: 0.6rem; left: 50%; transform: translateX(-50%);
+  z-index: 300;
+  background: rgba(248, 113, 113, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: var(--red);
+  font: 600 0.72rem var(--sans);
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+/* ---------- terminal overlays (never a mysterious void) ---------- */
+.terminal-overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(7, 11, 18, 0.72);
+  backdrop-filter: blur(1.5px);
+  font: 500 0.82rem var(--mono);
+  z-index: 10;
+  cursor: default;
+}
+.terminal-overlay.info { color: var(--muted); }
+.terminal-overlay.warn { color: var(--amber); }
+.terminal-dim { filter: saturate(0.6) brightness(0.85); }
+
+/* ---------- agent details grid ---------- */
+.agent-details {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.75rem 0.9rem 0.85rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
+}
+.ad-title-row { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+.ad-flag { font-size: 1.25rem; line-height: 1; }
+.ad-hostname { font: 600 1rem var(--sans); letter-spacing: 0.01em; }
+.ad-seen { margin-left: auto; color: var(--muted); font-size: 0.68rem; }
+.ad-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.45rem 0.9rem;
+}
+.ad-cell {
+  display: flex; flex-direction: column; gap: 0.12rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  min-width: 0;
+}
+.ad-label { font: 600 0.58rem var(--sans); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.ad-value { font-size: 0.78rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-value.mono { font-family: var(--mono); }
+.ad-banreason {
+  color: var(--amber); font-size: 0.72rem;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 8px; padding: 0.35rem 0.6rem;
+}
+
+/* ---------- script runner: targets, saved chips, notices ---------- */
+.sr-targets {
+  display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+  padding: 0.5rem 1rem 0;
+}
+.sr-targets-label { font: 600 0.62rem var(--sans); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.sr-target {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font: 500 0.68rem var(--mono);
+  padding: 0.22rem 0.55rem;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--panel-2);
+  cursor: pointer;
+  color: var(--muted);
+  transition: all 0.12s ease;
+}
+.sr-target.on { color: var(--green); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+.sr-target input { accent-color: var(--green); margin: 0; }
+.sr-saved {
+  display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;
+  padding: 0.55rem 1rem 0;
+}
+.sr-saved-label { font: 600 0.62rem var(--sans); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.sr-saved-chip {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font: 500 0.68rem var(--mono);
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+.sr-saved-chip:hover { border-color: var(--accent); }
+.sr-saved-del {
+  background: none; border: none; color: var(--muted);
+  font-size: 0.78rem; line-height: 1; cursor: pointer; padding: 0;
+}
+.sr-saved-del:hover { color: var(--red); }
+.sr-notice {
+  margin: 0.5rem 1rem 0;
+  color: var(--green);
+  font-size: 0.72rem;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+}
+.sr-error {
+  margin: 0.5rem 1rem 0;
+  color: var(--red);
+  font-size: 0.72rem;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+}
+
+/* ---------- activity / history tab ---------- */
+.history-tab { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+.history-panel { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.history-head { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1rem 0.4rem; }
+.history-empty { color: var(--muted); font-size: 0.75rem; padding: 0.6rem 1rem; }
+.history-list { overflow-y: auto; padding: 0 0.7rem 0.9rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.history-item { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+.history-item-head {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0.6rem; cursor: pointer;
+}
+.history-item-head:hover { background: rgba(34, 211, 238, 0.04); }
+.history-time { font: 500 0.62rem var(--mono); color: var(--accent); white-space: nowrap; }
+.history-operator { font: 600 0.6rem var(--sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
+.history-command {
+  font: 500 0.72rem var(--mono); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+}
+.history-caret { color: var(--muted); transition: transform 0.15s ease; }
+.history-caret.open { transform: rotate(90deg); }
+.history-output {
+  margin: 0; padding: 0.6rem 0.7rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  font: 400 0.7rem var(--mono);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* mobile: keep details grid readable */
+@media (max-width: 768px) {
+  .ad-grid { grid-template-columns: repeat(2, 1fr); }
+  .ad-seen { width: 100%; margin-left: 0; }
+  .agent-actions { opacity: 1; }
+}

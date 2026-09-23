@@ -3,6 +3,8 @@ import api from '../api';
 import AgentList from './AgentList';
 import Terminal from './Terminal';
 import ScriptRunner from './ScriptRunner';
+import HistoryPanel from './HistoryPanel';
+import { flagEmoji, countryLabel, osIcon, osLabel, timeAgo, fullDate } from '../utils';
 
 function Dashboard({ token, onLogout }) {
   const [agents, setAgents] = useState([]);
@@ -18,6 +20,8 @@ function Dashboard({ token, onLogout }) {
     const w = parseInt(localStorage.getItem('rto.sidebar.width') || '', 10);
     return Number.isFinite(w) && w >= 200 ? w : 280;
   });
+  const [historyKey, setHistoryKey] = useState(0);
+  const [linkNotice, setLinkNotice] = useState('');
   const sidebarWidthRef = useRef(sidebarWidth);
   const dragState = useRef(null);
   const onLogoutRef = useRef(onLogout);
@@ -52,16 +56,38 @@ function Dashboard({ token, onLogout }) {
         fetchAgents();
       };
       ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
         if (msg.type === 'agent_status') {
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.id === msg.agent.id ? { ...a, status: msg.agent.status, ...msg.agent } : a
-            )
+          // BUG FIX — upsert instead of map-only. The old code updated the
+          // agent row ONLY if it was already in state, so an agent connecting
+          // for the first time (or after a fresh enroll) never appeared until
+          // a manual page refresh.
+          setAgents((prev) => {
+            const exists = prev.some((a) => a.id === msg.agent.id);
+            if (exists) {
+              return prev.map((a) =>
+                a.id === msg.agent.id ? { ...a, ...msg.agent, status: msg.agent.status } : a
+              );
+            }
+            // Unknown agent — fetch the full row (the WS payload is partial)
+            api.get('/agents').then((res) => setAgents(res.data)).catch(() => {});
+            return prev;
+          });
+          // keep the selected agent object in sync so terminal overlays,
+          // badges and "last seen" react live to status changes
+          setSelectedAgent((prev) =>
+            prev && prev.id === msg.agent.id ? { ...prev, ...msg.agent, status: msg.agent.status } : prev
           );
-        } else if (msg.type === 'terminal_output' || msg.type === 'script_result') {
+        } else if (msg.type === 'agent_removed') {
+          // NEW: agent was deleted — drop it from the list, clear selection
+          setAgents((prev) => prev.filter((a) => a.id !== msg.agent_id));
+          setSelectedAgent((prev) => (prev?.id === msg.agent_id ? null : prev));
+        } else if (msg.type === 'terminal_output' || msg.type === 'script_result' || msg.type === 'script_error') {
           // Pass to child components (Terminal / ScriptRunner) via a custom event
           window.dispatchEvent(new CustomEvent('agent-message', { detail: msg }));
+          // A new result may have landed — refresh the activity feed badge
+          if (msg.type === 'script_result') setHistoryKey((k) => k + 1);
         }
       };
       ws.onclose = (event) => {
@@ -85,17 +111,31 @@ function Dashboard({ token, onLogout }) {
     fetchAgents(); // initial load
     connect();     // then keep the link alive automatically
 
+    // NEW: periodic refresh so "last seen" and statuses stay honest even
+    // without WS events (heartbeats only touch the DB server-side).
+    const poll = setInterval(fetchAgents, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchAgents(); };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       disposed = true;
       if (timer) clearTimeout(timer);
+      clearInterval(poll);
+      document.removeEventListener('visibilitychange', onVisible);
       if (ws) ws.close();
     };
   }, [token]);
 
+  // Returns false when the link is down so callers can surface feedback
+  // instead of silently dropping the operator's action.
   const sendToAgent = (message) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(message));
+      return true;
     }
+    setLinkNotice('Link to server is down — your last action was NOT delivered.');
+    setTimeout(() => setLinkNotice(''), 4000);
+    return false;
   };
 
   const toggleSidebar = () => {
@@ -131,7 +171,16 @@ function Dashboard({ token, onLogout }) {
     window.addEventListener('mouseup', onResizeEnd);
   };
 
-  const onlineCount = agents.filter((a) => a.status === 'online').length;
+  const refreshAgents = () => {
+    api.get('/agents').then((res) => {
+      setAgents(res.data);
+      // keep the selected agent object fresh after ban/unban/delete
+      setSelectedAgent((prev) => (prev ? res.data.find((a) => a.id === prev.id) || null : null));
+    }).catch(console.error);
+  };
+
+  const onlineCount = agents.filter((a) => a.status === 'online' && !a.banned).length;
+  const bannedCount = agents.filter((a) => a.banned).length;
   const shellIsRunning = !!selectedAgent && !!shellRunning[selectedAgent.id];
 
   return (
@@ -163,6 +212,12 @@ function Dashboard({ token, onLogout }) {
             <span className="stat-label">Online</span>
             <span className="stat-value">{onlineCount}</span>
           </div>
+          {bannedCount > 0 && (
+            <div className="stat">
+              <span className="stat-label">Banned</span>
+              <span className="stat-value banned">{bannedCount}</span>
+            </div>
+          )}
         </div>
         <span className={`conn-pill ${wsConnected ? 'online' : 'offline'}`}>
           <span className="conn-dot" />
@@ -170,6 +225,8 @@ function Dashboard({ token, onLogout }) {
         </span>
         <button className="btn-logout" onClick={onLogout}>Sign out</button>
       </header>
+
+      {linkNotice && <div className="link-notice">{linkNotice}</div>}
 
       <div className="workspace">
         <aside
@@ -180,13 +237,47 @@ function Dashboard({ token, onLogout }) {
             <span>Deployed Agents</span>
             <span className="count-badge">{agents.length}</span>
           </div>
-          <AgentList agents={agents} selectedAgent={selectedAgent} onSelect={setSelectedAgent} />
+          <AgentList
+            agents={agents}
+            selectedAgent={selectedAgent}
+            onSelect={setSelectedAgent}
+            onAgentsChanged={refreshAgents}
+          />
         </aside>
         {sidebarOpen && <div className="sidebar-resizer" onMouseDown={onResizeStart} />}
 
         <main className="main-panel">
           {selectedAgent ? (
             <div className="tab-area">
+              {/* NEW: full agent details — OS, IP, country flag, ISP, first/last seen */}
+              <section className="agent-details">
+                <div className="ad-title-row">
+                  <span className="ad-flag" title={countryLabel(selectedAgent)}>
+                    {flagEmoji(selectedAgent.country_code)}
+                  </span>
+                  <span className="ad-hostname">{selectedAgent.hostname}</span>
+                  <span className={`agent-badge ${selectedAgent.banned ? 'banned' : selectedAgent.status}`}>
+                    {selectedAgent.banned ? 'banned' : selectedAgent.status}
+                  </span>
+                  <span className="ad-seen">
+                    last seen {timeAgo(selectedAgent.last_seen)} · first seen {timeAgo(selectedAgent.created_at)}
+                  </span>
+                </div>
+                <div className="ad-grid">
+                  <div className="ad-cell"><span className="ad-label">IP</span><span className="ad-value mono">{selectedAgent.ip_address || '—'}</span></div>
+                  <div className="ad-cell"><span className="ad-label">OS</span><span className="ad-value">{osIcon(selectedAgent)} {osLabel(selectedAgent)}</span></div>
+                  <div className="ad-cell"><span className="ad-label">Arch</span><span className="ad-value mono">{selectedAgent.os_arch || '—'}</span></div>
+                  <div className="ad-cell"><span className="ad-label">Platform</span><span className="ad-value">{selectedAgent.platform || '—'}</span></div>
+                  <div className="ad-cell"><span className="ad-label">User</span><span className="ad-value">{selectedAgent.username || '—'}</span></div>
+                  <div className="ad-cell"><span className="ad-label">Country</span><span className="ad-value">{flagEmoji(selectedAgent.country_code)} {countryLabel(selectedAgent)}</span></div>
+                  <div className="ad-cell"><span className="ad-label">ISP</span><span className="ad-value">{selectedAgent.isp || '—'}</span></div>
+                  <div className="ad-cell"><span className="ad-label">Agent ID</span><span className="ad-value mono">{selectedAgent.id.slice(0, 13)}…</span></div>
+                </div>
+                {selectedAgent.banned && selectedAgent.ban_reason && (
+                  <div className="ad-banreason">Ban reason: {selectedAgent.ban_reason}</div>
+                )}
+              </section>
+
               <nav className="tabbar">
                 <button
                   className={`tab ${activeTab === 'shell' ? 'active' : ''}`}
@@ -201,6 +292,13 @@ function Dashboard({ token, onLogout }) {
                 >
                   <span className={`tab-dot amber ${wsConnected ? 'live' : ''}`} />
                   Script Runner
+                </button>
+                <button
+                  className={`tab ${activeTab === 'history' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('history')}
+                >
+                  <span className="tab-dot green" />
+                  Activity
                 </button>
                 <span className="tabbar-meta">
                   {selectedAgent.hostname} · {selectedAgent.ip_address || '0.0.0.0'}
@@ -234,14 +332,22 @@ function Dashboard({ token, onLogout }) {
               </section>
 
               <section className={`panel script-panel ${activeTab === 'scripts' ? '' : 'hidden'}`}>
-                <ScriptRunner agents={selectedAgent ? [selectedAgent] : []} sendToAgent={sendToAgent} />
+                <ScriptRunner
+                  agents={agents}
+                  defaultAgentId={selectedAgent.id}
+                  sendToAgent={sendToAgent}
+                />
+              </section>
+
+              <section className={`panel history-tab ${activeTab === 'history' ? '' : 'hidden'}`}>
+                <HistoryPanel agent={selectedAgent} refreshKey={historyKey} />
               </section>
             </div>
           ) : (
             <div className="empty-state">
               <span className="empty-icon">⌁</span>
               <h2>No Agent Selected</h2>
-              <p>Select a deployed agent from the left to open a shell and script runner.</p>
+              <p>Select a deployed agent from the left to open a shell, script runner and activity feed.</p>
             </div>
           )}
         </main>

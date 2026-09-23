@@ -1,0 +1,64 @@
+// Small shared helpers for the operator console.
+
+// ISO 3166-1 alpha-2 -> regional indicator emoji flag ("US" -> 🇺🇸).
+// Anything missing/invalid renders as a globe so the UI never breaks on
+// agents that haven't reported a country yet.
+export function flagEmoji(countryCode) {
+  if (!countryCode || typeof countryCode !== 'string' || countryCode.length !== 2) {
+    return '🌐';
+  }
+  const cc = countryCode.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return '🌐';
+  return String.fromCodePoint(...[...cc].map((c) => 127397 + c.charCodeAt(0)));
+}
+
+export function countryLabel(agent) {
+  if (!agent) return 'Unknown';
+  if (agent.country) return agent.country;
+  if (agent.country_code) return agent.country_code.toUpperCase();
+  return 'Unknown';
+}
+
+// OS family -> emoji icon. Falls back gracefully for unknown/legacy agents.
+export function osIcon(agent) {
+  const hay = `${agent?.os_name || ''} ${agent?.os_version || ''} ${agent?.platform || ''}`.toLowerCase();
+  if (hay.includes('windows') || agent?.os_name === 'windows') return '🪟';
+  if (hay.includes('mac') || hay.includes('darwin') || hay.includes('osx') || agent?.os_name === 'macos') return '🍎';
+  if (hay.includes('android') || agent?.os_name === 'android') return '🤖';
+  if (hay.includes('linux') || hay.includes('ubuntu') || hay.includes('debian') || hay.includes('centos') ||
+      hay.includes('kali') || hay.includes('fedora') || hay.includes('arch') || agent?.os_name === 'linux') return '🐧';
+  return '💠';
+}
+
+export function osLabel(agent) {
+  if (!agent) return 'Unknown OS';
+  const family = agent.os_name
+    ? agent.os_name.charAt(0).toUpperCase() + agent.os_name.slice(1)
+    : (agent.os_version || '').split(' ')[0] || 'Unknown';
+  return [family, agent.os_version].filter(Boolean).join(' · ');
+}
+
+// Relative time: "just now", "42s ago", "5m ago", "3h ago", "2d ago".
+// Falls back to a locale date for anything older / invalid.
+export function timeAgo(value) {
+  if (!value) return 'never';
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return 'never';
+  const diff = Math.max(0, Date.now() - then);
+  const s = Math.floor(diff / 1000);
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(value).toLocaleString();
+}
+
+export function fullDate(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}

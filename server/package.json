@@ -15,5 +15,8 @@
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0",
     "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.2"
   }
 }

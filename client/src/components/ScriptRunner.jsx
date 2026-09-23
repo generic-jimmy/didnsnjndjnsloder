@@ -2,64 +2,122 @@ import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import api from '../api';
 
-function ScriptRunner({ agents, sendToAgent }) {
+function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
   const [language, setLanguage] = useState('powershell');
   const [scriptContent, setScriptContent] = useState('');
   const [scriptName, setScriptName] = useState('');
   const [output, setOutput] = useState('');
   const [saveError, setSaveError] = useState('');
-  const [selectedAgentIds, setSelectedAgentIds] = useState(agents.map(a => a.id));
+  const [selectedAgentIds, setSelectedAgentIds] = useState(
+    defaultAgentId ? [defaultAgentId] : []
+  );
+  const [savedScripts, setSavedScripts] = useState([]);
+  const [notice, setNotice] = useState('');
   const editorRef = useRef(null);
 
-  // Update selected agents when the set of agent IDs actually changes.
-  // Previously this ran on every new `agents` array reference (even one
-  // with identical ids), which would silently blow away any manual
-  // selection a future "pick specific agents" UI might make.
+  // Sync selection when the agent set changes — keep existing manual picks,
+  // default to the currently selected agent on first load.
   useEffect(() => {
-    const nextIds = agents.map(a => a.id);
     setSelectedAgentIds((prev) => {
-      const same =
-        prev.length === nextIds.length && prev.every((id) => nextIds.includes(id));
-      return same ? prev : nextIds;
+      const validIds = new Set(agents.map((a) => a.id));
+      const kept = prev.filter((id) => validIds.has(id));
+      if (kept.length > 0) return kept;
+      if (defaultAgentId && validIds.has(defaultAgentId)) return [defaultAgentId];
+      return agents.map((a) => a.id);
     });
-  }, [agents]);
+  }, [agents, defaultAgentId]);
+
+  const loadSavedScripts = () => {
+    api.get('/scripts').then((res) => setSavedScripts(res.data || [])).catch(() => {});
+  };
+
+  useEffect(() => {
+    loadSavedScripts();
+  }, []);
+
+  const appendOutput = (line) => setOutput((prev) => (prev ? `${prev}\n${line}` : line));
 
   // Capture script results for the whole lifetime of this component, so
   // long-running scripts don't lose their output (was a 30s timeout before).
+  //
+  // BUG FIX — "script doesn't show results": the old handler only read
+  // `msg.data?.output`. If the agent reports its result under `data` (the
+  // same shape terminal_output uses) or as a bare string, the old code
+  // appended empty lines and the output pane looked dead. This parser now
+  // accepts every shape the server can relay.
   useEffect(() => {
     const handler = (event) => {
       const msg = event.detail;
-      if (msg?.type === 'script_result' && selectedAgentIds.includes(msg.agent_id)) {
-        setOutput((prev) => prev + `\n[${msg.agent_id}] ${msg.data?.output ?? ''}`);
+      const d = msg?.data;
+      if (msg?.type === 'script_result') {
+        const text =
+          typeof d === 'string'
+            ? d
+            : typeof d?.output === 'string'
+              ? d.output
+              : typeof d?.data === 'string'
+                ? d.data
+                : (d?.output ?? d?.data ?? '');
+        appendOutput(`[${msg.agent_id}] ${text}`);
+      } else if (msg?.type === 'script_error') {
+        // NEW: server now tells us when a target is offline / payload invalid
+        const errText = typeof d === 'string' ? d : d?.error || 'unknown error';
+        const who = msg.agent_id ? `agent ${msg.agent_id}` : 'runner';
+        appendOutput(`[error] ${who}: ${errText}`);
       }
     };
     window.addEventListener('agent-message', handler);
     return () => window.removeEventListener('agent-message', handler);
-  }, [selectedAgentIds]);
+  }, []);
+
+  const toggleAgent = (id) => {
+    setSelectedAgentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
   const runScript = () => {
-    if (!scriptContent.trim()) return;
-    if (selectedAgentIds.length === 0) {
-      setOutput((prev) => prev + `\n[warning] No agents selected — script was not sent.`);
+    if (!scriptContent.trim()) {
+      setNotice('Write a script first.');
       return;
     }
-    setOutput((prev) => (prev ? prev + `\n\n--- run @ ${new Date().toLocaleTimeString()} ---` : ''));
-    sendToAgent({
+    if (selectedAgentIds.length === 0) {
+      setNotice('No agents selected — tick at least one target above the Run button.');
+      return;
+    }
+    setNotice('');
+    setSaveError('');
+    const stamp = new Date().toLocaleTimeString();
+    setOutput((prev) => (prev ? `${prev}\n\n--- run @ ${stamp} ---` : `--- run @ ${stamp} ---`));
+    appendOutput(`[runner] dispatching to ${selectedAgentIds.length} agent(s)…`);
+
+    // BUG FIX — sendToAgent used to silently drop the message when the
+    // websocket was down; the operator pressed Run and nothing ever happened.
+    // The Dashboard now returns false in that case and we surface it.
+    const ok = sendToAgent({
       action: 'script_run',
       agent_ids: selectedAgentIds,
       language,
       content: scriptContent
     });
+
+    if (!ok) {
+      appendOutput('[error] Link to server is down — script was NOT sent. Wait for the link to reconnect.');
+    }
   };
 
   const clearOutput = () => setOutput('');
 
   const saveScript = async () => {
-    if (!scriptName || !scriptContent) return;
+    if (!scriptName || !scriptContent) {
+      setSaveError('Script needs a name and some content before saving.');
+      return;
+    }
     setSaveError('');
     try {
       await api.post('/scripts', { name: scriptName, language, content: scriptContent });
-      alert('Script saved');
+      setNotice(`Saved "${scriptName}" ✓`);
+      loadSavedScripts();
     } catch (err) {
       console.error(err);
       const data = err?.response?.data;
@@ -70,6 +128,28 @@ function ScriptRunner({ agents, sendToAgent }) {
       setSaveError(backendMessage || err?.message || 'Failed to save script.');
     }
   };
+
+  const loadScript = (id) => {
+    const s = savedScripts.find((x) => x.id === id);
+    if (!s) return;
+    setScriptName(s.name || '');
+    setScriptContent(s.content || '');
+    if (s.language) setLanguage(s.language);
+    setNotice(`Loaded "${s.name}" ✓`);
+  };
+
+  const deleteScript = async (id) => {
+    try {
+      await api.delete(`/scripts/${id}`);
+      loadSavedScripts();
+      setNotice('Script deleted');
+    } catch (err) {
+      setSaveError(err?.response?.data?.error || 'Failed to delete script.');
+    }
+  };
+
+  const agentName = (id) => agents.find((a) => a.id === id)?.hostname || id;
+  void agentName;
 
   return (
     <div className="script-runner">
@@ -92,7 +172,48 @@ function ScriptRunner({ agents, sendToAgent }) {
           <button className="btn-primary" onClick={runScript}>▶ Run</button>
         </div>
       </div>
-      {saveError && <div className="sr-error">{saveError}</div>}
+
+      {savedScripts.length > 0 && (
+        <div className="sr-saved">
+          <span className="sr-saved-label">Saved:</span>
+          {savedScripts.map((s) => (
+            <span key={s.id} className="sr-saved-chip" onClick={() => loadScript(s.id)} title="Click to load">
+              {s.name}
+              <button
+                className="sr-saved-del"
+                title="Delete script"
+                onClick={(e) => { e.stopPropagation(); deleteScript(s.id); }}
+              >×</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Multi-target selection — the server always supported broadcasting to
+          several agents; now the console exposes it. */}
+      <div className="sr-targets">
+        <span className="sr-targets-label">Targets:</span>
+        {agents.map((a) => (
+          <label key={a.id} className={`sr-target ${selectedAgentIds.includes(a.id) ? 'on' : ''}`}>
+            <input
+              type="checkbox"
+              checked={selectedAgentIds.includes(a.id)}
+              onChange={() => toggleAgent(a.id)}
+            />
+            {a.hostname}
+          </label>
+        ))}
+        <button
+          className="btn-ghost btn-small"
+          onClick={() => setSelectedAgentIds(agents.map((a) => a.id))}
+        >All</button>
+        <button className="btn-ghost btn-small" onClick={() => setSelectedAgentIds([])}>None</button>
+      </div>
+
+      {(saveError || notice) && (
+        <div className={saveError ? 'sr-error' : 'sr-notice'}>{saveError || notice}</div>
+      )}
+
       <div className="editor-wrap">
         <Editor
           height="220px"
@@ -100,6 +221,10 @@ function ScriptRunner({ agents, sendToAgent }) {
           value={scriptContent}
           onChange={setScriptContent}
           theme="vs-dark"
+          // Keep Monaco's layout in sync when panels are shown/hidden —
+          // without this the editor can render 0-height inside the hidden
+          // tab and look broken when switched back.
+          automaticLayout
           onMount={(editor) => {
             editorRef.current = editor;
             editor.focus();
