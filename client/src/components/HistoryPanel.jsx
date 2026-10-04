@@ -12,6 +12,20 @@ function HistoryPanel({ agent, refreshKey }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  const downloadExport = async (format) => {
+    try {
+      const res = await api.get(`/agents/${agent.id}/history/export?format=${format}`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `badman-history-${agent.hostname || 'agent'}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Export failed');
+    }
+  };
+
   const load = () => {
     if (!agent?.id) return;
     setLoading(true);
@@ -35,7 +49,11 @@ function HistoryPanel({ agent, refreshKey }) {
         <span className="panel-title">
           <span className="title-dot amber" /> Activity — {agent.hostname}
         </span>
-        <button className="btn-ghost btn-small" onClick={load}>Refresh</button>
+        <div className="history-actions">
+          <button className="btn-ghost btn-small" onClick={() => downloadExport('csv')} title="Export history as CSV">CSV ⬇</button>
+          <button className="btn-ghost btn-small" onClick={() => downloadExport('json')} title="Export history as JSON">JSON ⬇</button>
+          <button className="btn-ghost btn-small" onClick={load}>Refresh</button>
+        </div>
       </div>
       {loading && <div className="history-empty">Loading history…</div>}
       {!loading && error && <div className="sr-error">{error}</div>}

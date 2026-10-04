@@ -1,15 +1,25 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import api from '../api';
 import AgentList from './AgentList';
 import Terminal from './Terminal';
 import ScriptRunner from './ScriptRunner';
 import HistoryPanel from './HistoryPanel';
-import { flagEmoji, countryLabel, osIcon, osLabel, timeAgo, fullDate } from '../utils';
+import Flag from './Flag';
+import TagChips from './TagChips';
+import TagEditor from './TagEditor';
+import { countryLabel, osIcon, osLabel, timeAgo } from '../utils';
+
+// Heavy views are code-split so the console stays fast to boot
+const FleetDashboard = lazy(() => import('./FleetDashboard'));
+const ServerMetrics = lazy(() => import('./ServerMetrics'));
 
 function Dashboard({ token, onLogout }) {
   const [agents, setAgents] = useState([]);
+  const [tags, setTags] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [activeTab, setActiveTab] = useState('shell');
+  const [view, setView] = useState('console'); // console | fleet | metrics
+  const [tagEditorOpen, setTagEditorOpen] = useState(false);
   const [shellRunning, setShellRunning] = useState({}); // per-agent: { [agentId]: bool }
   const wsRef = useRef(null);
   const [wsConnected, setWsConnected] = useState(false);
@@ -18,7 +28,7 @@ function Dashboard({ token, onLogout }) {
   );
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const w = parseInt(localStorage.getItem('rto.sidebar.width') || '', 10);
-    return Number.isFinite(w) && w >= 200 ? w : 280;
+    return Number.isFinite(w) && w >= 200 ? w : 240;
   });
   const [historyKey, setHistoryKey] = useState(0);
   const [linkNotice, setLinkNotice] = useState('');
@@ -42,6 +52,9 @@ function Dashboard({ token, onLogout }) {
     const fetchAgents = () => {
       api.get('/agents').then((res) => setAgents(res.data)).catch(console.error);
     };
+    const fetchTags = () => {
+      api.get('/tags').then((res) => setTags(res.data || [])).catch(() => {});
+    };
 
     const connect = () => {
       if (disposed) return;
@@ -54,15 +67,14 @@ function Dashboard({ token, onLogout }) {
         setWsConnected(true);
         // Re-sync the agent list on every (re)connect so statuses aren't stale
         fetchAgents();
+        fetchTags();
       };
       ws.onmessage = (event) => {
         let msg;
         try { msg = JSON.parse(event.data); } catch (e) { return; }
         if (msg.type === 'agent_status') {
-          // BUG FIX — upsert instead of map-only. The old code updated the
-          // agent row ONLY if it was already in state, so an agent connecting
-          // for the first time (or after a fresh enroll) never appeared until
-          // a manual page refresh.
+          // Upsert: update existing rows in place, refetch when a brand-new
+          // agent appears (WS payload for new agents may be partial).
           setAgents((prev) => {
             const exists = prev.some((a) => a.id === msg.agent.id);
             if (exists) {
@@ -80,9 +92,12 @@ function Dashboard({ token, onLogout }) {
             prev && prev.id === msg.agent.id ? { ...prev, ...msg.agent, status: msg.agent.status } : prev
           );
         } else if (msg.type === 'agent_removed') {
-          // NEW: agent was deleted — drop it from the list, clear selection
           setAgents((prev) => prev.filter((a) => a.id !== msg.agent_id));
           setSelectedAgent((prev) => (prev?.id === msg.agent_id ? null : prev));
+        } else if (msg.type === 'tags_changed') {
+          fetchTags();
+          // tags embed into agent rows — refresh so chips update everywhere
+          fetchAgents();
         } else if (msg.type === 'terminal_output' || msg.type === 'script_result' || msg.type === 'script_error') {
           // Pass to child components (Terminal / ScriptRunner) via a custom event
           window.dispatchEvent(new CustomEvent('agent-message', { detail: msg }));
@@ -109,9 +124,10 @@ function Dashboard({ token, onLogout }) {
     };
 
     fetchAgents(); // initial load
+    fetchTags();
     connect();     // then keep the link alive automatically
 
-    // NEW: periodic refresh so "last seen" and statuses stay honest even
+    // Periodic refresh so "last seen" and statuses stay honest even
     // without WS events (heartbeats only touch the DB server-side).
     const poll = setInterval(fetchAgents, 30000);
     const onVisible = () => { if (document.visibilityState === 'visible') fetchAgents(); };
@@ -179,6 +195,16 @@ function Dashboard({ token, onLogout }) {
     }).catch(console.error);
   };
 
+  const refreshTags = () => {
+    api.get('/tags').then((res) => setTags(res.data || [])).catch(() => {});
+    refreshAgents();
+  };
+
+  const openAgentFromFleet = (agent) => {
+    setSelectedAgent(agent);
+    setView('console');
+  };
+
   const onlineCount = agents.filter((a) => a.status === 'online' && !a.banned).length;
   const bannedCount = agents.filter((a) => a.banned).length;
   const shellIsRunning = !!selectedAgent && !!shellRunning[selectedAgent.id];
@@ -193,6 +219,20 @@ function Dashboard({ token, onLogout }) {
             <span className="brand-sub">Operator Console</span>
           </div>
         </div>
+        <nav className="view-tabs">
+          <button
+            className={`view-tab ${view === 'fleet' ? 'active' : ''}`}
+            onClick={() => setView('fleet')}
+          >Fleet</button>
+          <button
+            className={`view-tab ${view === 'console' ? 'active' : ''}`}
+            onClick={() => setView('console')}
+          >Console</button>
+          <button
+            className={`view-tab ${view === 'metrics' ? 'active' : ''}`}
+            onClick={() => setView('metrics')}
+          >Metrics</button>
+        </nav>
         <button
           className={`btn-sidebar-toggle ${sidebarOpen ? 'active' : ''}`}
           onClick={toggleSidebar}
@@ -228,130 +268,166 @@ function Dashboard({ token, onLogout }) {
 
       {linkNotice && <div className="link-notice">{linkNotice}</div>}
 
-      <div className="workspace">
-        <aside
-          className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}
-          style={{ width: sidebarOpen ? sidebarWidth : 0 }}
-        >
-          <div className="sidebar-head">
-            <span>Deployed Agents</span>
-            <span className="count-badge">{agents.length}</span>
-          </div>
-          <AgentList
-            agents={agents}
-            selectedAgent={selectedAgent}
-            onSelect={setSelectedAgent}
-            onAgentsChanged={refreshAgents}
-          />
-        </aside>
-        {sidebarOpen && <div className="sidebar-resizer" onMouseDown={onResizeStart} />}
-
-        <main className="main-panel">
-          {selectedAgent ? (
-            <div className="tab-area">
-              {/* NEW: full agent details — OS, IP, country flag, ISP, first/last seen */}
-              <section className="agent-details">
-                <div className="ad-title-row">
-                  <span className="ad-flag" title={countryLabel(selectedAgent)}>
-                    {flagEmoji(selectedAgent.country_code)}
-                  </span>
-                  <span className="ad-hostname">{selectedAgent.hostname}</span>
-                  <span className={`agent-badge ${selectedAgent.banned ? 'banned' : selectedAgent.status}`}>
-                    {selectedAgent.banned ? 'banned' : selectedAgent.status}
-                  </span>
-                  <span className="ad-seen">
-                    last seen {timeAgo(selectedAgent.last_seen)} · first seen {timeAgo(selectedAgent.created_at)}
-                  </span>
-                </div>
-                <div className="ad-grid">
-                  <div className="ad-cell"><span className="ad-label">IP</span><span className="ad-value mono">{selectedAgent.ip_address || '—'}</span></div>
-                  <div className="ad-cell"><span className="ad-label">OS</span><span className="ad-value">{osIcon(selectedAgent)} {osLabel(selectedAgent)}</span></div>
-                  <div className="ad-cell"><span className="ad-label">Arch</span><span className="ad-value mono">{selectedAgent.os_arch || '—'}</span></div>
-                  <div className="ad-cell"><span className="ad-label">Platform</span><span className="ad-value">{selectedAgent.platform || '—'}</span></div>
-                  <div className="ad-cell"><span className="ad-label">User</span><span className="ad-value">{selectedAgent.username || '—'}</span></div>
-                  <div className="ad-cell"><span className="ad-label">Country</span><span className="ad-value">{flagEmoji(selectedAgent.country_code)} {countryLabel(selectedAgent)}</span></div>
-                  <div className="ad-cell"><span className="ad-label">ISP</span><span className="ad-value">{selectedAgent.isp || '—'}</span></div>
-                  <div className="ad-cell"><span className="ad-label">Agent ID</span><span className="ad-value mono">{selectedAgent.id.slice(0, 13)}…</span></div>
-                </div>
-                {selectedAgent.banned && selectedAgent.ban_reason && (
-                  <div className="ad-banreason">Ban reason: {selectedAgent.ban_reason}</div>
-                )}
-              </section>
-
-              <nav className="tabbar">
-                <button
-                  className={`tab ${activeTab === 'shell' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('shell')}
-                >
-                  <span className={`tab-dot ${wsConnected ? 'live' : ''}`} />
-                  Shell
-                </button>
-                <button
-                  className={`tab ${activeTab === 'scripts' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('scripts')}
-                >
-                  <span className={`tab-dot amber ${wsConnected ? 'live' : ''}`} />
-                  Script Runner
-                </button>
-                <button
-                  className={`tab ${activeTab === 'history' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('history')}
-                >
-                  <span className="tab-dot green" />
-                  Activity
-                </button>
-                <span className="tabbar-meta">
-                  {selectedAgent.hostname} · {selectedAgent.ip_address || '0.0.0.0'}
-                </span>
-              </nav>
-
-              <section className={`panel terminal-panel ${activeTab === 'shell' ? '' : 'hidden'}`}>
-                <div className="panel-head">
-                  <span className="panel-title">
-                    <span className="title-dot" /> Interactive Shell
-                  </span>
-                  <span className="panel-meta">cmd · {selectedAgent.hostname}</span>
-                  <button
-                    className={`btn-shell-toggle ${shellIsRunning ? 'running' : ''}`}
-                    onClick={() => setShellRunning((prev) => ({ ...prev, [selectedAgent.id]: !prev[selectedAgent.id] }))}
-                    title={shellIsRunning ? 'Stop the background shell' : 'Start the background shell'}
-                  >
-                    <span className="shell-toggle-dot" />
-                    {shellIsRunning ? 'Stop' : 'Start'}
-                  </button>
-                </div>
-                <div className="terminal-body">
-                  <Terminal
-                    agent={selectedAgent}
-                    sendToAgent={sendToAgent}
-                    active={activeTab === 'shell'}
-                    running={shellIsRunning}
-                    connected={wsConnected}
-                  />
-                </div>
-              </section>
-
-              <section className={`panel script-panel ${activeTab === 'scripts' ? '' : 'hidden'}`}>
-                <ScriptRunner
-                  agents={agents}
-                  defaultAgentId={selectedAgent.id}
-                  sendToAgent={sendToAgent}
-                />
-              </section>
-
-              <section className={`panel history-tab ${activeTab === 'history' ? '' : 'hidden'}`}>
-                <HistoryPanel agent={selectedAgent} refreshKey={historyKey} />
-              </section>
-            </div>
-          ) : (
-            <div className="empty-state">
-              <span className="empty-icon">⌁</span>
-              <h2>No Agent Selected</h2>
-              <p>Select a deployed agent from the left to open a shell, script runner and activity feed.</p>
-            </div>
-          )}
+      {view === 'fleet' && (
+        <main className="main-panel full">
+          <Suspense fallback={<div className="view-loading">Loading Fleet Dashboard…</div>}>
+            <FleetDashboard agents={agents} onSelectAgent={openAgentFromFleet} />
+          </Suspense>
         </main>
-      </div>
+      )}
+
+      {view === 'metrics' && (
+        <main className="main-panel full">
+          <Suspense fallback={<div className="view-loading">Loading Server Metrics…</div>}>
+            <ServerMetrics />
+          </Suspense>
+        </main>
+      )}
+
+      {view === 'console' && (
+        <div className="workspace">
+          <aside
+            className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}
+            style={{ width: sidebarOpen ? sidebarWidth : 0 }}
+          >
+            <div className="sidebar-head">
+              <span>Deployed Agents</span>
+              <span className="count-badge">{agents.length}</span>
+            </div>
+            <AgentList
+              agents={agents}
+              tags={tags}
+              selectedAgent={selectedAgent}
+              onSelect={setSelectedAgent}
+              onAgentsChanged={refreshAgents}
+            />
+          </aside>
+          {sidebarOpen && <div className="sidebar-resizer" onMouseDown={onResizeStart} />}
+
+          <main className="main-panel">
+            {selectedAgent ? (
+              <div className="tab-area">
+                {/* Agent details — real flag, tags, full system info */}
+                <section className="agent-details">
+                  <div className="ad-title-row">
+                    <Flag agent={selectedAgent} size="lg" />
+                    <span className="ad-hostname">{selectedAgent.hostname}</span>
+                    <span className={`agent-badge ${selectedAgent.banned ? 'banned' : selectedAgent.status}`}>
+                      {selectedAgent.banned ? 'banned' : selectedAgent.status}
+                    </span>
+                    <TagChips tags={selectedAgent.tags || []} max={4} />
+                    <button className="btn-ghost btn-small" onClick={() => setTagEditorOpen((v) => !v)}>
+                      {tagEditorOpen ? 'Close Tags' : '+ Tag'}
+                    </button>
+                    <span className="ad-seen">
+                      last seen {timeAgo(selectedAgent.last_seen)} · first seen {timeAgo(selectedAgent.created_at)}
+                    </span>
+                  </div>
+                  {tagEditorOpen && (
+                    <TagEditor
+                      agent={selectedAgent}
+                      tags={tags}
+                      onSaved={refreshTags}
+                      onClose={() => setTagEditorOpen(false)}
+                    />
+                  )}
+                  <div className="ad-grid">
+                    <div className="ad-cell"><span className="ad-label">IP</span><span className="ad-value mono">{selectedAgent.ip_address || '—'}</span></div>
+                    <div className="ad-cell"><span className="ad-label">OS</span><span className="ad-value">{osIcon(selectedAgent)} {osLabel(selectedAgent)}</span></div>
+                    <div className="ad-cell"><span className="ad-label">Arch</span><span className="ad-value mono">{selectedAgent.os_arch || '—'}</span></div>
+                    <div className="ad-cell"><span className="ad-label">Platform</span><span className="ad-value">{selectedAgent.platform || '—'}</span></div>
+                    <div className="ad-cell"><span className="ad-label">User</span><span className="ad-value">{selectedAgent.username || '—'}</span></div>
+                    <div className="ad-cell">
+                      <span className="ad-label">Country</span>
+                      <span className="ad-value">
+                        <Flag agent={selectedAgent} size="sm" /> {countryLabel(selectedAgent)}
+                        {selectedAgent.isp ? <span className="ad-isp"> · {selectedAgent.isp}</span> : null}
+                      </span>
+                    </div>
+                    <div className="ad-cell"><span className="ad-label">ISP</span><span className="ad-value">{selectedAgent.isp || '—'}</span></div>
+                    <div className="ad-cell"><span className="ad-label">Agent ID</span><span className="ad-value mono">{selectedAgent.id.slice(0, 13)}…</span></div>
+                  </div>
+                  {selectedAgent.banned && selectedAgent.ban_reason && (
+                    <div className="ad-banreason">Ban reason: {selectedAgent.ban_reason}</div>
+                  )}
+                </section>
+
+                <nav className="tabbar">
+                  <button
+                    className={`tab ${activeTab === 'shell' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('shell')}
+                  >
+                    <span className={`tab-dot ${wsConnected ? 'live' : ''}`} />
+                    Shell
+                  </button>
+                  <button
+                    className={`tab ${activeTab === 'scripts' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('scripts')}
+                  >
+                    <span className={`tab-dot amber ${wsConnected ? 'live' : ''}`} />
+                    Script Runner
+                  </button>
+                  <button
+                    className={`tab ${activeTab === 'history' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('history')}
+                  >
+                    <span className="tab-dot green" />
+                    Activity
+                  </button>
+                  <span className="tabbar-meta">
+                    {selectedAgent.hostname} · {selectedAgent.ip_address || '0.0.0.0'}
+                  </span>
+                </nav>
+
+                <section className={`panel terminal-panel ${activeTab === 'shell' ? '' : 'hidden'}`}>
+                  <div className="panel-head">
+                    <span className="panel-title">
+                      <span className="title-dot" /> Interactive Shell
+                    </span>
+                    <span className="panel-meta">cmd · {selectedAgent.hostname}</span>
+                    <button
+                      className={`btn-shell-toggle ${shellIsRunning ? 'running' : ''}`}
+                      onClick={() => setShellRunning((prev) => ({ ...prev, [selectedAgent.id]: !prev[selectedAgent.id] }))}
+                      title={shellIsRunning ? 'Stop the background shell' : 'Start the background shell'}
+                    >
+                      <span className="shell-toggle-dot" />
+                      {shellIsRunning ? 'Stop' : 'Start'}
+                    </button>
+                  </div>
+                  <div className="terminal-body">
+                    <Terminal
+                      agent={selectedAgent}
+                      sendToAgent={sendToAgent}
+                      active={activeTab === 'shell'}
+                      running={shellIsRunning}
+                      connected={wsConnected}
+                    />
+                  </div>
+                </section>
+
+                <section className={`panel script-panel ${activeTab === 'scripts' ? '' : 'hidden'}`}>
+                  <ScriptRunner
+                    agents={agents}
+                    tags={tags}
+                    defaultAgentId={selectedAgent.id}
+                    sendToAgent={sendToAgent}
+                  />
+                </section>
+
+                <section className={`panel history-tab ${activeTab === 'history' ? '' : 'hidden'}`}>
+                  <HistoryPanel agent={selectedAgent} refreshKey={historyKey} />
+                </section>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <span className="empty-icon">⌁</span>
+                <h2>No Agent Selected</h2>
+                <p>Select a deployed agent from the left to open a shell, script runner and activity feed.</p>
+              </div>
+            )}
+          </main>
+        </div>
+      )}
     </div>
   );
 }

@@ -15,8 +15,22 @@ export function flagEmoji(countryCode) {
 export function countryLabel(agent) {
   if (!agent) return 'Unknown';
   if (agent.country) return agent.country;
-  if (agent.country_code) return agent.country_code.toUpperCase();
+  if (agent.country_code) return regionName(agent.country_code);
   return 'Unknown';
+}
+
+// ISO 3166-1 alpha-2 -> full country name via the browser's own Intl data
+// ("US" -> "United States"). Zero data shipped; cached after first use.
+let regionNames = null;
+export function regionName(code) {
+  const cc = String(code || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return cc || 'Unknown';
+  try {
+    if (!regionNames) regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+    return regionNames.of(cc) || cc;
+  } catch {
+    return cc;
+  }
 }
 
 // OS family -> emoji icon. Falls back gracefully for unknown/legacy agents.
@@ -36,6 +50,17 @@ export function osLabel(agent) {
     ? agent.os_name.charAt(0).toUpperCase() + agent.os_name.slice(1)
     : (agent.os_version || '').split(' ')[0] || 'Unknown';
   return [family, agent.os_version].filter(Boolean).join(' · ');
+}
+
+// Coarse OS family for filters: windows | linux | macos | android | other
+export function osFamily(agent) {
+  const hay = `${agent?.os_name || ''} ${agent?.os_version || ''} ${agent?.platform || ''}`.toLowerCase();
+  if (hay.includes('win')) return 'windows';
+  if (hay.includes('mac') || hay.includes('darwin') || hay.includes('osx')) return 'macos';
+  if (hay.includes('android')) return 'android';
+  if (hay.includes('linux') || hay.includes('ubuntu') || hay.includes('debian') || hay.includes('centos') ||
+      hay.includes('kali') || hay.includes('fedora') || hay.includes('arch')) return 'linux';
+  return 'other';
 }
 
 // Relative time: "just now", "42s ago", "5m ago", "3h ago", "2d ago".

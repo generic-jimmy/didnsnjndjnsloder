@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import api from '../api';
 
-function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
+function ScriptRunner({ agents, tags = [], sendToAgent, defaultAgentId }) {
   const [language, setLanguage] = useState('powershell');
   const [scriptContent, setScriptContent] = useState('');
   const [scriptName, setScriptName] = useState('');
@@ -13,6 +13,7 @@ function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
   );
   const [savedScripts, setSavedScripts] = useState([]);
   const [notice, setNotice] = useState('');
+  const [targetTagFilter, setTargetTagFilter] = useState('all');
   const editorRef = useRef(null);
 
   // Sync selection when the agent set changes — keep existing manual picks,
@@ -151,6 +152,11 @@ function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
   const agentName = (id) => agents.find((a) => a.id === id)?.hostname || id;
   void agentName;
 
+  // Group-targeting: filter the visible target list by tag
+  const visibleTargets = targetTagFilter === 'all'
+    ? agents
+    : agents.filter((a) => (a.tags || []).some((t) => t.id === targetTagFilter));
+
   return (
     <div className="script-runner">
       <div className="sr-head">
@@ -189,11 +195,21 @@ function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
         </div>
       )}
 
-      {/* Multi-target selection — the server always supported broadcasting to
-          several agents; now the console exposes it. */}
+      {/* Multi-target selection — filter by tag for group runs */}
       <div className="sr-targets">
         <span className="sr-targets-label">Targets:</span>
-        {agents.map((a) => (
+        {tags.length > 0 && (
+          <select
+            className="sr-tag-filter"
+            value={targetTagFilter}
+            onChange={(e) => setTargetTagFilter(e.target.value)}
+            title="Show only agents with this tag"
+          >
+            <option value="all">All agents</option>
+            {tags.map((t) => <option key={t.id} value={t.id}>Tag: {t.name}</option>)}
+          </select>
+        )}
+        {visibleTargets.map((a) => (
           <label key={a.id} className={`sr-target ${selectedAgentIds.includes(a.id) ? 'on' : ''}`}>
             <input
               type="checkbox"
@@ -205,7 +221,7 @@ function ScriptRunner({ agents, sendToAgent, defaultAgentId }) {
         ))}
         <button
           className="btn-ghost btn-small"
-          onClick={() => setSelectedAgentIds(agents.map((a) => a.id))}
+          onClick={() => setSelectedAgentIds(visibleTargets.map((a) => a.id))}
         >All</button>
         <button className="btn-ghost btn-small" onClick={() => setSelectedAgentIds([])}>None</button>
       </div>

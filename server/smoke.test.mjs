@@ -1,7 +1,8 @@
 // Smoke test for the upgraded server: mocks PostgreSQL with an in-memory
 // store (bun mock.module), then exercises the real HTTP + WS logic:
 // login, agents list, agent connect/register/heartbeat, operator relay,
-// script_run + script_error, ban/unban/delete, command_logs, history.
+// script_run + script_error, ban/unban/delete, command_logs, history,
+// PLUS v3: login lockout, tags, live metrics, timeline, CSV/JSON exports.
 import { mock, describe, test, expect, beforeAll } from 'bun:test';
 import fs from 'fs';
 
@@ -9,6 +10,9 @@ import fs from 'fs';
 const agents = new Map(); // id -> row
 const logs = [];          // command_logs rows
 const scripts = [];
+const tagStore = new Map();     // tag id -> row
+const agentTags = new Map();    // agent id -> [tag ids]
+const snapshots = [];           // metrics_snapshots rows
 let seq = 0;
 const id = () => `id-${++seq}`;
 const uuid = 'a1b2c3d4-0000-4000-8000-000000000000';
@@ -118,6 +122,131 @@ function matchQuery(text, params) {
     const list = logs.filter((l) => l.agent_id === params[0]).slice(0, params[1]);
     return { rows: list, rowCount: list.length };
   }
+  // ---------- v3 mocks ----------
+  // single agent WITH tags
+  if (t.startsWith('SELECT a.id, a.hostname') && t.includes('WHERE a.id = $1')) {
+    const row = agents.get(params[0]);
+    if (!row) return { rows: [], rowCount: 0 };
+    const tags = (agentTags.get(params[0]) || []).map((tid) => tagStore.get(tid)).filter(Boolean);
+    return { rows: [{ ...row, tags }], rowCount: 1 };
+  }
+  // agents list / export WITH tags
+  if (t.startsWith('SELECT a.id, a.hostname')) {
+    const rows = [...agents.values()].map((row) => ({
+      ...row,
+      tags: (agentTags.get(row.id) || []).map((tid) => tagStore.get(tid)).filter(Boolean)
+    }));
+    return { rows, rowCount: rows.length };
+  }
+  // geo enrichment fill (country/isp/lat/lon)
+  if (t.startsWith('UPDATE public.agents SET country = COALESCE')) {
+    const a = agents.get(params[0]);
+    if (a) {
+      a.country = a.country ?? params[1];
+      a.country_code = a.country_code ?? params[2];
+      a.isp = a.isp ?? params[3];
+      a.lat = a.lat ?? params[4];
+      a.lon = a.lon ?? params[5];
+    }
+    return { rows: [], rowCount: a ? 1 : 0 };
+  }
+  // tags list
+  if (t.startsWith('SELECT t.id, t.name')) {
+    const rows = [...tagStore.values()].map((tag) => ({
+      ...tag,
+      agent_count: [...agentTags.values()].filter((ids) => ids.includes(tag.id)).length
+    }));
+    return { rows, rowCount: rows.length };
+  }
+  // create/recolor tag
+  if (t.startsWith('INSERT INTO public.tags')) {
+    const existing = [...tagStore.values()].find((x) => x.name === params[0]);
+    if (existing) {
+      existing.color = params[1];
+      return { rows: [existing], rowCount: 1 };
+    }
+    const row = { id: `tag-${++seq}`, name: params[0], color: params[1], created_at: new Date().toISOString() };
+    tagStore.set(row.id, row);
+    return { rows: [row], rowCount: 1 };
+  }
+  if (t.startsWith('DELETE FROM public.tags WHERE id')) {
+    tagStore.delete(params[0]);
+    for (const [aid, ids] of agentTags) agentTags.set(aid, ids.filter((x) => x !== params[0]));
+    return { rows: [], rowCount: 1 };
+  }
+  // transaction control (PUT agent tags)
+  if (t === 'BEGIN' || t === 'COMMIT' || t === 'ROLLBACK') return { rows: [], rowCount: 0 };
+  if (t.startsWith('DELETE FROM public.agent_tags WHERE agent_id')) {
+    agentTags.set(params[0], []);
+    return { rows: [], rowCount: 1 };
+  }
+  if (t.startsWith('INSERT INTO public.agent_tags')) {
+    const ids = agentTags.get(params[0]) || [];
+    if (!ids.includes(params[1])) ids.push(params[1]);
+    agentTags.set(params[0], ids);
+    return { rows: [], rowCount: 1 };
+  }
+  // fleet snapshot count
+  if (t.startsWith('SELECT count(*) FILTER')) {
+    const list = [...agents.values()];
+    return {
+      rows: [{
+        online: list.filter((a) => a.status === 'online' && !a.banned).length,
+        offline: list.filter((a) => a.status !== 'online' && !a.banned).length,
+        banned: list.filter((a) => a.banned).length,
+        total: list.length
+      }],
+      rowCount: 1
+    };
+  }
+  if (t.startsWith('INSERT INTO public.metrics_snapshots')) {
+    snapshots.push({ id: seq++, captured_at: new Date().toISOString(), online: params[0], offline: params[1], banned: params[2], total: params[3] });
+    return { rows: [], rowCount: 1 };
+  }
+  // timeline select
+  if (t.startsWith('SELECT captured_at, online, offline, banned, total')) {
+    const hours = Number(params[0]) || 24;
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    const rows = snapshots.filter((s) => new Date(s.captured_at).getTime() >= cutoff);
+    return { rows, rowCount: rows.length };
+  }
+  // retention: purge by age
+  if (t.startsWith('DELETE FROM public.command_logs') && t.includes('executed_at < now()')) {
+    const days = Number(params[0]) || 0;
+    const cutoff = Date.now() - days * 86400000;
+    let removed = 0;
+    for (let i = logs.length - 1; i >= 0 && removed < 500; i--) {
+      if (new Date(logs[i].executed_at).getTime() < cutoff) {
+        logs.splice(i, 1);
+        removed++;
+      }
+    }
+    return { rows: [], rowCount: removed };
+  }
+  // retention: cap rows per agent
+  if (t.startsWith('DELETE FROM public.command_logs') && t.includes('row_number()')) {
+    const cap = Number(params[0]) || 0;
+    const byAgent = {};
+    const toDelete = [];
+    for (const l of [...logs].sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at))) {
+      byAgent[l.agent_id] = (byAgent[l.agent_id] || 0) + 1;
+      if (byAgent[l.agent_id] > cap) toDelete.push(l);
+    }
+    let removed = 0;
+    for (const l of toDelete.slice(0, 500)) {
+      const idx = logs.indexOf(l);
+      if (idx >= 0) {
+        logs.splice(idx, 1);
+        removed++;
+      }
+    }
+    return { rows: [], rowCount: removed };
+  }
+  if (t.startsWith('DELETE FROM public.metrics_snapshots')) {
+    const n = snapshots.length;
+    snapshots.length = 0;
+    return { rows: [], rowCount: n };
+  }
   // insert script
   if (t.startsWith('INSERT INTO public.scripts')) {
     const row = { id: id(), name: params[0], language: params[1], content: params[2], created_by: params[3], created_at: new Date().toISOString() };
@@ -139,18 +268,32 @@ function matchQuery(text, params) {
 mock.module('pg', () => ({
   default: {
     Pool: class Pool {
-      constructor() {}
+      constructor() {
+        this.totalCount = 1;
+        this.idleCount = 0;
+        this.waitingCount = 0;
+      }
       on() {}
       async query(text, params = []) {
         return matchQuery(text, params);
+      }
+      async connect() {
+        return { query: (t, p = []) => matchQuery(t, p), release() {} };
       }
       end() {}
     }
   },
   Pool: class Pool2 {
-    constructor() {}
+    constructor() {
+      this.totalCount = 1;
+      this.idleCount = 0;
+      this.waitingCount = 0;
+    }
     on() {}
     async query(text, params = []) { return matchQuery(text, params); }
+    async connect() {
+      return { query: (t, p = []) => matchQuery(t, p), release() {} };
+    }
     end() {}
   }
 }));
@@ -159,6 +302,11 @@ process.env.DATABASE_URL = 'postgres://mock:mock@localhost/mock';
 process.env.PORT = '4444';
 process.env.JWT_SECRET = 'test-secret';
 process.env.DB_SSL = 'false';
+process.env.DB_POOL_MAX = '25';
+// fast-expiring lockouts so tests stay quick; high per-IP cap so the flood
+// test can count requests precisely (it runs LAST)
+process.env.LOGIN_LOCKOUT_BASE_MS = '500';
+process.env.LOGIN_IP_MAX = '100';
 
 // Seed one known agent + one banned agent
 const AGENT_ID = uuid + '100';
@@ -330,6 +478,23 @@ describe('Badman upgraded server', () => {
     expect(rows[0].command).toBe('Get-Process');
   });
 
+  test('live metrics reflect open sockets and message counters', async () => {
+    const res = await fetch(`${BASE}/api/metrics/live`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(res.status).toBe(200);
+    const m = await res.json();
+    expect(m.server_version).toBeTruthy();
+    expect(m.node_version).toBe(process.version);
+    expect(typeof m.uptime_s).toBe('number');
+    expect(m.ws.agents_connected).toBeGreaterThanOrEqual(1);
+    expect(m.ws.operators_connected).toBeGreaterThanOrEqual(1);
+    expect(m.ws.messages_in).toBeGreaterThan(0);
+    expect(m.ws.messages_out).toBeGreaterThan(0);
+    expect(m.ws.throughput_series.length).toBe(60);
+    expect(m.db.pool_max).toBe(25);
+    expect(m.db).toHaveProperty('pool_total');
+    expect(m.geo).toHaveProperty('cache_size');
+  });
+
   test('saved scripts round-trip', async () => {
     const save = await fetch(`${BASE}/api/scripts`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${operatorToken}` }, body: JSON.stringify({ name: 'enum', language: 'powershell', content: 'Get-Service' }) });
     expect(save.status).toBe(200);
@@ -366,10 +531,135 @@ describe('Badman upgraded server', () => {
     expect(rows.find((a) => a.id === BANNED_ID)).toBeUndefined();
   });
 
+  test('tags: create, assign, counted, delete', async () => {
+    const H = { 'content-type': 'application/json', authorization: `Bearer ${operatorToken}` };
+    const created = await fetch(`${BASE}/api/tags`, { method: 'POST', headers: H, body: JSON.stringify({ name: 'prod', color: '#34d399' }) });
+    expect(created.status).toBe(200);
+    const tag = await created.json();
+    expect(tag.name).toBe('prod');
+    // assign to the live agent (transaction path)
+    const put = await fetch(`${BASE}/api/agents/${AGENT_ID}/tags`, { method: 'PUT', headers: H, body: JSON.stringify({ tag_ids: [tag.id] }) });
+    expect(put.status).toBe(200);
+    const putBody = await put.json();
+    expect(putBody.tags[0].name).toBe('prod');
+    // tag shows in the agents list
+    const agentsRes = await fetch(`${BASE}/api/agents`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    const rows = await agentsRes.json();
+    const alpha = rows.find((a) => a.id === AGENT_ID);
+    expect(alpha.tags.length).toBe(1);
+    expect(alpha.tags[0].name).toBe('prod');
+    // agent_count on the tag list
+    const list1 = await fetch(`${BASE}/api/tags`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    const tags1 = await list1.json();
+    expect(tags1.find((t) => t.id === tag.id).agent_count).toBe(1);
+    // deleting the tag removes it from agents too
+    const del = await fetch(`${BASE}/api/tags/${tag.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(del.status).toBe(200);
+    const agentsRes2 = await fetch(`${BASE}/api/agents`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    const rows2 = await agentsRes2.json();
+    expect(rows2.find((a) => a.id === AGENT_ID).tags.length).toBe(0);
+  });
+
+  test('metrics timeline returns an array', async () => {
+    const res = await fetch(`${BASE}/api/metrics/timeline?hours=24`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(res.status).toBe(200);
+    expect(Array.isArray(await res.json())).toBe(true);
+  });
+
+  test('export agents as CSV and JSON', async () => {
+    const csv = await fetch(`${BASE}/api/export/agents?format=csv`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get('content-type')).toContain('text/csv');
+    expect(csv.headers.get('content-disposition')).toContain('attachment');
+    const text = await csv.text();
+    expect(text).toContain('hostname');
+    // NOTE: PC-ALPHA was renamed WIN-SRV-01 by the register test, and the
+    // banned agent was deleted by an earlier test — one row expected.
+    expect(text).toContain('WIN-SRV-01');
+    expect(text.trim().split('\r\n').length - 1).toBe(1); // 1 data row
+    const json = await fetch(`${BASE}/api/export/agents?format=json`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(json.status).toBe(200);
+    const arr = await json.json();
+    expect(Array.isArray(arr)).toBe(true);
+    expect(arr.length).toBe(1);
+  });
+
+  test('export agent history as CSV and JSON', async () => {
+    const csv = await fetch(`${BASE}/api/agents/${AGENT_ID}/history/export?format=csv`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(csv.status).toBe(200);
+    const text = await csv.text();
+    expect(text).toContain('executed_at');
+    expect(text).toContain('Get-Process');
+    const json = await fetch(`${BASE}/api/agents/${AGENT_ID}/history/export?format=json`, { headers: { authorization: `Bearer ${operatorToken}` } });
+    expect(json.status).toBe(200);
+    const arr = await json.json();
+    expect(Array.isArray(arr)).toBe(true);
+  });
+
   test('SPA catch-all serves index for deep routes, 404s API', async () => {
     const spa = await fetch(`${BASE}/some/deep/route`);
     expect(spa.status).toBe(200);
     const api404 = await fetch(`${BASE}/api/nope`, { headers: { authorization: `Bearer ${operatorToken}` } });
     expect(api404.status).toBe(404);
+  });
+
+  test('login lockout: 3 strikes -> 429 with countdown; expiry + success reset; doubling', async () => {
+    const login = (u, p) => fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
+    // strikes on the REAL operator account
+    const r1 = await login('admin', 'nope');
+    expect(r1.status).toBe(401);
+    expect((await r1.json()).attempts_remaining).toBe(2);
+    const r2 = await login('admin', 'nope');
+    expect(r2.status).toBe(401);
+    const r3 = await login('admin', 'nope');
+    expect(r3.status).toBe(429);
+    const lockBody = await r3.json();
+    expect(lockBody.locked_until).toBeTruthy();
+    expect(lockBody.retry_after_seconds).toBeGreaterThanOrEqual(0);
+    // even CORRECT credentials are rejected while locked
+    const r4 = await login('admin', 'password');
+    expect(r4.status).toBe(429);
+    // wait out the (test-tuned 500ms) lockout, then succeed — resets the ladder
+    await new Promise((res) => setTimeout(res, 1100));
+    const r5 = await login('admin', 'password');
+    expect(r5.status).toBe(200);
+    // full reset: one more failure is NOT an instant lock (would be if ladder persisted)
+    const r6 = await login('admin', 'nope');
+    expect(r6.status).toBe(401);
+    // DOUBLING: an attacker who NEVER logs in successfully escalates
+    // 500ms -> 1000ms. Use an always-failing username (no bcrypt path).
+    await login('attacker', 'x');
+    await login('attacker', 'x');
+    const a3t0 = Date.now();
+    const a3 = await login('attacker', 'x'); // offense #1 -> 500ms
+    expect(a3.status).toBe(429);
+    const firstMs = new Date((await a3.json()).locked_until).getTime() - a3t0;
+    expect(firstMs).toBeGreaterThan(250); // ~500ms lock
+    expect(firstMs).toBeLessThan(900);    // (bcrypt-free path is fast)
+    await new Promise((res) => setTimeout(res, 800)); // lock expires; ladder NOT reset
+    await login('attacker', 'x');
+    await login('attacker', 'x');
+    const a6t0 = Date.now();
+    const a6 = await login('attacker', 'x'); // offense #2 -> 1000ms (doubled)
+    expect(a6.status).toBe(429);
+    const secondMs = new Date((await a6.json()).locked_until).getTime() - a6t0;
+    expect(secondMs).toBeGreaterThan(firstMs + 250); // doubled, minus timing slop
+    await new Promise((res) => setTimeout(res, 1200)); // clear before flood test
+  });
+
+  test('per-IP flood guard trips after sustained login attempts (runs last)', async () => {
+    let flooded = null;
+    let oks = 0;
+    for (let i = 0; i < 120; i++) {
+      const res = await fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: `flood-${i}`, password: 'x' }) });
+      if (res.status === 429) {
+        flooded = await res.json();
+        break;
+      }
+      if (res.status === 401) oks += 1;
+    }
+    expect(flooded).not.toBeNull();
+    expect(flooded.retry_after_seconds).toBeGreaterThanOrEqual(1);
+    expect(oks).toBeGreaterThanOrEqual(80);
   });
 });
