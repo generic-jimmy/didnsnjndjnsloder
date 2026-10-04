@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
+import { ComposableMap, Geographies, Geography, Marker, ZoomableGroup } from 'react-simple-maps';
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis,
   Tooltip, AreaChart, Area, CartesianGrid
@@ -13,6 +13,8 @@ const worldUrl = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json
 
 const OS_COLORS = { windows: '#60a5fa', linux: '#34d399', macos: '#fbbf24', android: '#a78bfa', other: '#64748b' };
 const STATUS_COLORS = { online: '#34d399', offline: '#f87171', banned: '#fbbf24' };
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 10;
 
 function startOfUTCDay() {
   const d = new Date();
@@ -39,7 +41,12 @@ function FleetDashboard({ agents, onSelectAgent }) {
   const [worldError, setWorldError] = useState(false);
   const [hover, setHover] = useState(null); // { agent, x, y }
   const [timeline, setTimeline] = useState([]);
+  const [position, setPosition] = useState({ coordinates: [8, 8], zoom: 1 });
   const mapRef = useRef(null);
+
+  const zoomIn = () => setPosition((p) => ({ ...p, zoom: Math.min(p.zoom * 1.6, MAX_ZOOM) }));
+  const zoomOut = () => setPosition((p) => ({ ...p, zoom: Math.max(p.zoom / 1.6, MIN_ZOOM) }));
+  const zoomReset = () => setPosition({ coordinates: [8, 8], zoom: 1 });
 
   // Load the topojson once (CDN with graceful failure)
   useEffect(() => {
@@ -177,12 +184,25 @@ function FleetDashboard({ agents, onSelectAgent }) {
               projectionConfig={{ scale: 148, center: [8, 8] }}
               style={{ width: '100%', height: '100%' }}
               onMouseMove={(e) => {
-                if (hover) {
-                  const rect = mapRef.current.getBoundingClientRect();
-                  setHover((h) => ({ ...h, x: e.clientX - rect.left, y: e.clientY - rect.top }));
-                }
+                // Guard INSIDE the updater: a stale mousemove can arrive after
+                // onMouseLeave cleared the hover (h === null) — spreading over
+                // null produced {x,y} with no agent and crashed the tooltip.
+                if (!hover) return;
+                const rect = mapRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                setHover((h) => (h ? { ...h, x: e.clientX - rect.left, y: e.clientY - rect.top } : null));
               }}
             >
+              <ZoomableGroup
+                zoom={position.zoom}
+                center={position.coordinates}
+                maxZoom={MAX_ZOOM}
+                onMoveEnd={(pos) => {
+                  if (pos && Array.isArray(pos.coordinates) && Number.isFinite(pos.zoom)) {
+                    setPosition({ coordinates: pos.coordinates, zoom: pos.zoom });
+                  }
+                }}
+              >
               <Geographies geography={world}>
                 {({ geographies }) => (
                   <>
@@ -203,13 +223,14 @@ function FleetDashboard({ agents, onSelectAgent }) {
                     {pins.map(({ agent, lon, lat }) => (
                       <Marker key={agent.id} coordinates={[lon, lat]}>
                         <circle
-                          r={4.2}
+                          r={4.2 / position.zoom}
                           fill={STATUS_COLORS[status(agent)]}
                           stroke="#070b12"
-                          strokeWidth={1}
+                          strokeWidth={1 / position.zoom}
                           className="fleet-pin"
                           onMouseEnter={(e) => {
-                            const rect = mapRef.current.getBoundingClientRect();
+                            const rect = mapRef.current?.getBoundingClientRect();
+                            if (!rect) return;
                             setHover({ agent, x: e.clientX - rect.left, y: e.clientY - rect.top });
                           }}
                           onMouseLeave={() => setHover(null)}
@@ -221,13 +242,21 @@ function FleetDashboard({ agents, onSelectAgent }) {
                   </>
                 )}
               </Geographies>
+              </ZoomableGroup>
             </ComposableMap>
           )}
-          {hover && (
+          {world && (
+            <div className="fleet-zoom">
+              <button onClick={zoomIn} title="Zoom in" disabled={position.zoom >= MAX_ZOOM}>+</button>
+              <button onClick={zoomOut} title="Zoom out" disabled={position.zoom <= MIN_ZOOM}>&minus;</button>
+              <button className="fz-reset" onClick={zoomReset} title="Reset view">1:1</button>
+            </div>
+          )}
+          {hover?.agent && (
             <div className="fleet-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
               <div className="ft-row">
                 <Flag agent={hover.agent} size="md" />
-                <b>{hover.agent.hostname}</b>
+                <b>{hover.agent.hostname || hover.agent.ip_address || 'unknown'}</b>
                 <span className={`agent-badge ${status(hover.agent)}`}>{status(hover.agent)}</span>
               </div>
               <div className="ft-row muted">

@@ -93,7 +93,7 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
   };
 
   // Group + sort pipeline (search-aware)
-  const { rows, counts } = useMemo(() => {
+  const { rows } = useMemo(() => {
     const f = { online: 0, offline: 0, banned: 0 };
     for (const a of agents) f[statusOf(a)] += 1;
 
@@ -236,20 +236,6 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
           >
             {Row}
           </VList>
-        )}
-      </div>
-
-      <div className="al-footer">
-        showing {rows.filter((r) => r.type === 'agent').length} of {agents.length}
-        <span className="al-footer-sep">·</span>
-        <span className="online">{counts.online} online</span>
-        <span className="al-footer-sep">·</span>
-        <span>{counts.offline} offline</span>
-        {counts.banned > 0 && (
-          <>
-            <span className="al-footer-sep">·</span>
-            <span className="banned">{counts.banned} banned</span>
-          </>
         )}
       </div>
     </div>

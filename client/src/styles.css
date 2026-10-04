@@ -1191,17 +1191,6 @@ body.resizing .sidebar { transition: none; }
   font-size: 0.54rem;
   color: var(--text);
 }
-.al-footer {
-  display: flex; align-items: center; gap: 0.35rem;
-  padding: 0.4rem 0.6rem;
-  border-top: 1px solid var(--border);
-  font: 500 0.62rem var(--mono);
-  color: var(--muted);
-}
-.al-footer .online { color: var(--green); }
-.al-footer .banned { color: var(--amber); }
-.al-footer-sep { opacity: 0.5; }
-
 /* virtual list rows: tighter cards */
 .agent-list.smart .agent-card { margin: 0; height: 50px; justify-content: center; }
 .agent-list.smart .agent-main { align-items: center; }
@@ -1408,3 +1397,39 @@ body.resizing .sidebar { transition: none; }
   .agent-btn { padding: 0.16rem 0.36rem; }
   .agent-host { font-size: 0.74rem; }
 }
+
+/* ---------- v5: map zoom controls + crash screen ---------- */
+.fleet-zoom {
+  position: absolute; top: 8px; right: 8px; z-index: 5;
+  display: flex; gap: 2px;
+}
+.fleet-zoom button {
+  width: 24px; height: 24px; padding: 0;
+  border-radius: 6px; border: 1px solid var(--border-2, #26375a);
+  background: rgba(13, 20, 36, 0.92);
+  color: var(--text); font: 700 14px/1 var(--mono);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: border-color 0.15s, color 0.15s;
+}
+.fleet-zoom button:hover:not(:disabled) { border-color: var(--accent, #22d3ee); color: var(--accent, #22d3ee); }
+.fleet-zoom button:disabled { opacity: 0.35; cursor: default; }
+.fleet-zoom .fz-reset { width: auto; padding: 0 7px; font-size: 9px; letter-spacing: 0.5px; }
+.fleet-pin { pointer-events: all; }
+
+.crash-screen {
+  min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0.8rem;
+  background: var(--bg, #0b1220); color: var(--text, #dbe4f3);
+  font: 500 0.85rem var(--mono, monospace); text-align: center; padding: 2rem;
+}
+.crash-screen h2 { color: var(--red, #f87171); margin: 0; font-size: 1.05rem; }
+.crash-screen p {
+  max-width: 560px; word-break: break-word;
+  color: var(--muted, #7d8ba6); font-size: 0.78rem; margin: 0;
+}
+.crash-screen button {
+  padding: 0.45rem 1.1rem; border-radius: 7px; border: 1px solid var(--border-2, #26375a);
+  background: #101a2e; color: var(--accent, #22d3ee);
+  font: 700 0.78rem var(--mono, monospace); cursor: pointer; margin: 0 0.3rem;
+}
+.crash-screen button:hover { border-color: var(--accent, #22d3ee); }
