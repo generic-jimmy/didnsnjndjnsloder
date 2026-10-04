@@ -364,10 +364,11 @@ async function startServer() {
 
 describe('Badman upgraded server', () => {
   beforeAll(async () => {
-    // the SPA catch-all serves client/dist/index.html — create a stub for tests
-    const distDir = new URL('../client/dist/', import.meta.url).pathname;
-    fs.mkdirSync(distDir, { recursive: true });
-    fs.writeFileSync(distDir + 'index.html', '<html><body>stub</body></html>');
+    // the SPA catch-all serves client/dist/index.html — serve a TEMP dir with
+    // a stub so the tests never pollute the real client build output.
+    const tmpDist = fs.mkdtempSync((process.env.TMPDIR || '/tmp') + '/badman-dist-');
+    fs.writeFileSync(tmpDist + '/index.html', '<html><body>stub</body></html>');
+    process.env.CLIENT_DIST_PATH = tmpDist;
     await startServer();
   }, 30000);
 

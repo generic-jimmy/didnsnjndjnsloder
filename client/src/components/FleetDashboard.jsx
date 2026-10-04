@@ -29,8 +29,11 @@ function Kpi({ label, value, tone, sub }) {
   );
 }
 
-// GLOBAL FLEET DASHBOARD — map + KPIs + charts. Live via the agents prop
-// (already WS-driven in Dashboard) + a 60s reconcile for the timeline.
+// GLOBAL FLEET DASHBOARD — compact single-screen layout:
+//   [ KPI row ]
+//   [ world map (fixed height) | OS donut + top countries stacked ]
+//   [ 24h online timeline (full width) ]
+// Live via the agents prop (already WS-driven in Dashboard) + 60s timeline poll.
 function FleetDashboard({ agents, onSelectAgent }) {
   const [world, setWorld] = useState(null);
   const [worldError, setWorldError] = useState(false);
@@ -90,7 +93,7 @@ function FleetDashboard({ agents, onSelectAgent }) {
       if (!groups[cc]) groups[cc] = { code: cc, name: a.country || regionName(cc), count: 0 };
       groups[cc].count += 1;
     }
-    return Object.values(groups).sort((x, y) => y.count - x.count).slice(0, 10);
+    return Object.values(groups).sort((x, y) => y.count - x.count).slice(0, 8);
   }, [agents]);
 
   const timelineData = useMemo(
@@ -157,174 +160,179 @@ function FleetDashboard({ agents, onSelectAgent }) {
         <Kpi label="New Today" value={kpis.newToday} tone="accent" />
       </div>
 
-      <div className="fleet-map-wrap" ref={mapRef}>
-        {!world && !worldError && <div className="fleet-map-loading">Loading world map…</div>}
-        {worldError && (
-          <div className="fleet-map-loading">
-            Map data unavailable (offline?) — KPIs, charts and exports still work.
-          </div>
-        )}
-        {world && (
-          <ComposableMap
-            projection="geoEqualEarth"
-            projectionConfig={{ scale: 132, center: [8, 8] }}
-            style={{ width: '100%', height: 'auto' }}
-            onMouseMove={(e) => {
-              if (hover) {
-                const rect = mapRef.current.getBoundingClientRect();
-                setHover((h) => ({ ...h, x: e.clientX - rect.left, y: e.clientY - rect.top }));
-              }
-            }}
-          >
-            <Geographies geography={world}>
-              {({ geographies }) => (
-                <>
-                  {geographies.map((g) => (
-                    <Geography
-                      key={g.rsmKey}
-                      geography={g}
-                      fill="#0d1526"
-                      stroke="#1c2a45"
-                      strokeWidth={0.4}
-                      style={{
-                        default: { outline: 'none' },
-                        hover: { fill: '#13203a', outline: 'none' },
-                        pressed: { outline: 'none' }
-                      }}
-                    />
-                  ))}
-                  {pins.map(({ agent, lon, lat }) => (
-                    <Marker key={agent.id} coordinates={[lon, lat]}>
-                      <circle
-                        r={4.2}
-                        fill={STATUS_COLORS[status(agent)]}
-                        stroke="#070b12"
-                        strokeWidth={1}
-                        className="fleet-pin"
-                        onMouseEnter={(e) => {
-                          const rect = mapRef.current.getBoundingClientRect();
-                          setHover({ agent, x: e.clientX - rect.left, y: e.clientY - rect.top });
+      {/* Map + charts BESIDE each other — everything fits on one screen */}
+      <div className="fleet-grid">
+        <div className="fleet-map-card" ref={mapRef}>
+          {!world && !worldError && <div className="fleet-map-loading">Loading world map…</div>}
+          {worldError && (
+            <div className="fleet-map-loading">
+              Map data unavailable (offline?) — KPIs, charts and exports still work.
+            </div>
+          )}
+          {world && (
+            <ComposableMap
+              projection="geoEqualEarth"
+              width={800}
+              height={400}
+              projectionConfig={{ scale: 148, center: [8, 8] }}
+              style={{ width: '100%', height: '100%' }}
+              onMouseMove={(e) => {
+                if (hover) {
+                  const rect = mapRef.current.getBoundingClientRect();
+                  setHover((h) => ({ ...h, x: e.clientX - rect.left, y: e.clientY - rect.top }));
+                }
+              }}
+            >
+              <Geographies geography={world}>
+                {({ geographies }) => (
+                  <>
+                    {geographies.map((g) => (
+                      <Geography
+                        key={g.rsmKey}
+                        geography={g}
+                        fill="#1a2740"
+                        stroke="#2e4066"
+                        strokeWidth={0.4}
+                        style={{
+                          default: { outline: 'none' },
+                          hover: { fill: '#243454', outline: 'none' },
+                          pressed: { outline: 'none' }
                         }}
-                        onMouseLeave={() => setHover(null)}
-                        onClick={() => onSelectAgent?.(agent)}
-                        style={{ cursor: 'pointer' }}
                       />
-                    </Marker>
-                  ))}
-                </>
-              )}
-            </Geographies>
-          </ComposableMap>
-        )}
-        {hover && (
-          <div className="fleet-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
-            <div className="ft-row">
-              <Flag agent={hover.agent} size="md" />
-              <b>{hover.agent.hostname}</b>
-              <span className={`agent-badge ${status(hover.agent)}`}>{status(hover.agent)}</span>
+                    ))}
+                    {pins.map(({ agent, lon, lat }) => (
+                      <Marker key={agent.id} coordinates={[lon, lat]}>
+                        <circle
+                          r={4.2}
+                          fill={STATUS_COLORS[status(agent)]}
+                          stroke="#070b12"
+                          strokeWidth={1}
+                          className="fleet-pin"
+                          onMouseEnter={(e) => {
+                            const rect = mapRef.current.getBoundingClientRect();
+                            setHover({ agent, x: e.clientX - rect.left, y: e.clientY - rect.top });
+                          }}
+                          onMouseLeave={() => setHover(null)}
+                          onClick={() => onSelectAgent?.(agent)}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </Marker>
+                    ))}
+                  </>
+                )}
+              </Geographies>
+            </ComposableMap>
+          )}
+          {hover && (
+            <div className="fleet-tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
+              <div className="ft-row">
+                <Flag agent={hover.agent} size="md" />
+                <b>{hover.agent.hostname}</b>
+                <span className={`agent-badge ${status(hover.agent)}`}>{status(hover.agent)}</span>
+              </div>
+              <div className="ft-row muted">
+                {hover.agent.ip_address || '—'} · {hover.agent.os_name || '?'} {hover.agent.os_version || ''}
+              </div>
+              <div className="ft-row muted">
+                {(hover.agent.country || regionName(hover.agent.country_code) || 'Unknown')}
+                {hover.agent.isp ? ` · ${hover.agent.isp}` : ''}
+              </div>
+              <div className="ft-row muted">seen {timeAgo(hover.agent.last_seen)}</div>
+              <div className="ft-row hint">click to open console</div>
             </div>
-            <div className="ft-row muted">
-              {hover.agent.ip_address || '—'} · {hover.agent.os_name || '?'} {hover.agent.os_version || ''}
+          )}
+        </div>
+
+        <div className="fleet-side">
+          <div className="fleet-chart-card">
+            <span className="metric-label">OS Distribution</span>
+            <ResponsiveContainer width="100%" height={118}>
+              <PieChart>
+                <Pie
+                  data={osData}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={34}
+                  outerRadius={52}
+                  paddingAngle={3}
+                  stroke="#070b12"
+                >
+                  {osData.map((d) => <Cell key={d.name} fill={OS_COLORS[d.name] || '#64748b'} />)}
+                </Pie>
+                <Tooltip
+                  contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
+                  formatter={(v, n) => [`${v} agent(s)`, osIcon({ os_name: n }) + ' ' + n]}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="fleet-legend">
+              {osData.map((d) => (
+                <span key={d.name} className="fleet-legend-item">
+                  <span className="legend-dot" style={{ background: OS_COLORS[d.name] }} />
+                  {osIcon({ os_name: d.name })} {d.name} ({d.value})
+                </span>
+              ))}
             </div>
-            <div className="ft-row muted">
-              {(hover.agent.country || regionName(hover.agent.country_code) || 'Unknown')}
-              {hover.agent.isp ? ` · ${hover.agent.isp}` : ''}
-            </div>
-            <div className="ft-row muted">seen {timeAgo(hover.agent.last_seen)}</div>
-            <div className="ft-row hint">click to open console</div>
           </div>
-        )}
+
+          <div className="fleet-chart-card">
+            <span className="metric-label">Top Countries</span>
+            <ResponsiveContainer width="100%" height={128}>
+              <BarChart data={countryData} layout="vertical" margin={{ left: 4, right: 12, top: 2, bottom: 2 }}>
+                <CartesianGrid stroke="#1c2a45" strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" tick={{ fill: '#7d8ba6', fontSize: 9 }} allowDecimals={false} />
+                <YAxis
+                  type="category"
+                  dataKey="code"
+                  width={42}
+                  tick={{ fill: '#7d8ba6', fontSize: 9 }}
+                  tickFormatter={(code) => {
+                    const c = countryData.find((x) => x.code === code);
+                    return c ? c.name.slice(0, 11) : code;
+                  }}
+                />
+                <Tooltip
+                  contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
+                  formatter={(v) => [`${v} agent(s)`, '']}
+                />
+                <Bar dataKey="count" fill="#22d3ee" radius={[0, 4, 4, 0]} barSize={10} />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="fleet-flags-row">
+              {countryData.slice(0, 8).map((c) => (
+                <span key={c.code} className="fleet-flag-item" title={`${c.name}: ${c.count}`}>
+                  <Flag agent={{ country_code: c.code, country: c.name }} size="sm" />
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="fleet-charts">
-        <div className="fleet-chart-card">
-          <span className="metric-label">OS Distribution</span>
-          <ResponsiveContainer width="100%" height={180}>
-            <PieChart>
-              <Pie
-                data={osData}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={45}
-                outerRadius={70}
-                paddingAngle={3}
-                stroke="#070b12"
-              >
-                {osData.map((d) => <Cell key={d.name} fill={OS_COLORS[d.name] || '#64748b'} />)}
-              </Pie>
-              <Tooltip
-                contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
-                formatter={(v, n) => [`${v} agent(s)`, osIcon({ os_name: n }) + ' ' + n]}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="fleet-legend">
-            {osData.map((d) => (
-              <span key={d.name} className="fleet-legend-item">
-                <span className="legend-dot" style={{ background: OS_COLORS[d.name] }} />
-                {osIcon({ os_name: d.name })} {d.name} ({d.value})
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="fleet-chart-card">
-          <span className="metric-label">Top Countries</span>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={countryData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-              <CartesianGrid stroke="#1c2a45" strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" tick={{ fill: '#7d8ba6', fontSize: 10 }} allowDecimals={false} />
-              <YAxis
-                type="category"
-                dataKey="code"
-                width={44}
-                tick={{ fill: '#7d8ba6', fontSize: 10 }}
-                tickFormatter={(code) => {
-                  const c = countryData.find((x) => x.code === code);
-                  return c ? c.name.slice(0, 12) : code;
-                }}
-              />
-              <Tooltip
-                contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
-                formatter={(v) => [`${v} agent(s)`, '']}
-              />
-              <Bar dataKey="count" fill="#22d3ee" radius={[0, 4, 4, 0]} barSize={12} />
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="fleet-flags-row">
-            {countryData.slice(0, 6).map((c) => (
-              <span key={c.code} className="fleet-flag-item" title={`${c.name}: ${c.count}`}>
-                <Flag agent={{ country_code: c.code, country: c.name }} size="sm" />
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="fleet-chart-card wide">
-          <span className="metric-label">Fleet Online History — 24h (5-min snapshots)</span>
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={timelineData} margin={{ top: 6, right: 12, left: -14, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gOnline" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#34d399" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="#34d399" stopOpacity={0.03} />
-                </linearGradient>
-                <linearGradient id="gOffline" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f87171" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#f87171" stopOpacity={0.03} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#1c2a45" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="time" tick={{ fill: '#7d8ba6', fontSize: 10 }} interval={Math.max(1, Math.floor(timelineData.length / 8))} />
-              <YAxis tick={{ fill: '#7d8ba6', fontSize: 10 }} allowDecimals={false} />
-              <Tooltip
-                contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
-              />
-              <Area type="stepAfter" dataKey="online" name="online" stroke="#34d399" fill="url(#gOnline)" strokeWidth={1.6} />
-              <Area type="stepAfter" dataKey="offline" name="offline" stroke="#f87171" fill="url(#gOffline)" strokeWidth={1.4} stackOffset="none" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+      <div className="fleet-chart-card wide fleet-timeline">
+        <span className="metric-label">Fleet Online History — 24h (5-min snapshots)</span>
+        <ResponsiveContainer width="100%" height={148}>
+          <AreaChart data={timelineData} margin={{ top: 6, right: 12, left: -14, bottom: 0 }}>
+            <defs>
+              <linearGradient id="gOnline" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#34d399" stopOpacity={0.45} />
+                <stop offset="100%" stopColor="#34d399" stopOpacity={0.03} />
+              </linearGradient>
+              <linearGradient id="gOffline" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#f87171" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="#f87171" stopOpacity={0.03} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="#1c2a45" strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="time" tick={{ fill: '#7d8ba6', fontSize: 10 }} interval={Math.max(1, Math.floor(timelineData.length / 8))} />
+            <YAxis tick={{ fill: '#7d8ba6', fontSize: 10 }} allowDecimals={false} />
+            <Tooltip
+              contentStyle={{ background: '#0f1626', border: '1px solid #26375a', borderRadius: 8, fontSize: 12 }}
+            />
+            <Area type="stepAfter" dataKey="online" name="online" stroke="#34d399" fill="url(#gOnline)" strokeWidth={1.6} />
+            <Area type="stepAfter" dataKey="offline" name="offline" stroke="#f87171" fill="url(#gOffline)" strokeWidth={1.4} stackOffset="none" />
+          </AreaChart>
+        </ResponsiveContainer>
       </div>
     </div>
   );

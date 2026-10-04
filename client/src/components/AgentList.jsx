@@ -3,19 +3,20 @@ import { VariableSizeList as VList } from 'react-window';
 import api from '../api';
 import Flag from './Flag';
 import TagChips from './TagChips';
-import { osIcon, osLabel, osFamily, timeAgo, fullDate, regionName } from '../utils';
+import { osLabel, timeAgoShort, fullDate, regionName } from '../utils';
 
 // ---------------------------------------------------------------------------
 // SMART AGENT LIST
 // - ONLINE agents ALWAYS float to the top, then OFFLINE, then BANNED (groups
 //   are labeled). The operator's sort choice applies INSIDE each group.
 // - Live search across hostname / IP / user / country / ISP / tags.
-// - Filters: status, OS family, country, ISP, tag.
+//   (Country / ISP / tag text all match the search box — type "kenya",
+//   "safaricom" or a tag name to narrow the list.)
 // - Virtualized (react-window): renders only visible rows, fluid at 1000s.
 // ---------------------------------------------------------------------------
 const STATUS_ORDER = ['online', 'offline', 'banned'];
-const HEADER_H = 24;
-const CARD_H = 54;
+const HEADER_H = 22;
+const CARD_H = 60;
 
 function statusOf(a) {
   return a.banned ? 'banned' : (a.status === 'online' ? 'online' : 'offline');
@@ -39,12 +40,6 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [sortKey, setSortKey] = useState('last_seen');
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [statusFilter, setStatusFilter] = useState(() => new Set(STATUS_ORDER));
-  const [osFilter, setOsFilter] = useState('all');
-  const [countryFilter, setCountryFilter] = useState('all');
-  const [ispFilter, setIspFilter] = useState('all');
-  const [tagFilter, setTagFilter] = useState(() => new Set());
 
   // Tick so "seen 2m ago" stays honest
   useEffect(() => {
@@ -97,24 +92,12 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
     }
   };
 
-  // Filter + group + sort pipeline
+  // Group + sort pipeline (search-aware)
   const { rows, counts } = useMemo(() => {
-    const f = {
-      online: 0, offline: 0, banned: 0
-    };
+    const f = { online: 0, offline: 0, banned: 0 };
     for (const a of agents) f[statusOf(a)] += 1;
 
-    const filtered = agents.filter((a) => {
-      if (!statusFilter.has(statusOf(a))) return false;
-      if (osFilter !== 'all' && osFamily(a) !== osFilter) return false;
-      if (countryFilter !== 'all' && (a.country_code || '').toUpperCase() !== countryFilter) return false;
-      if (ispFilter !== 'all' && (a.isp || '—') !== ispFilter) return false;
-      if (tagFilter.size > 0) {
-        const at = new Set((a.tags || []).map((t) => t.id));
-        for (const tid of tagFilter) if (!at.has(tid)) return false;
-      }
-      return matchesQuery(a, debounced);
-    });
+    const filtered = agents.filter((a) => matchesQuery(a, debounced));
 
     const secondary = (a, b) => {
       switch (sortKey) {
@@ -144,7 +127,7 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
       for (const a of group) out.push({ type: 'agent', key: a.id, agent: a });
     }
     return { rows: out, counts: f };
-  }, [agents, debounced, statusFilter, osFilter, countryFilter, ispFilter, tagFilter, sortKey]);
+  }, [agents, debounced, sortKey]);
 
   // Measure the scroll container so the list fills it exactly
   const containerRef = useRef(null);
@@ -169,27 +152,6 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
     [rows]
   );
 
-  const toggleSet = (setter) => (value) => {
-    setter((prev) => {
-      const next = new Set(prev);
-      if (next.has(value)) next.delete(value);
-      else next.add(value);
-      return next;
-    });
-  };
-
-  const countries = useMemo(
-    () => [...new Set(agents.map((a) => (a.country_code || '').toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c)))].sort(),
-    [agents]
-  );
-  const isps = useMemo(
-    () => [...new Set(agents.map((a) => a.isp || '—'))].sort(),
-    [agents]
-  );
-  const activeFilterCount =
-    (statusFilter.size < 3 ? 1 : 0) + (osFilter !== 'all' ? 1 : 0) + (countryFilter !== 'all' ? 1 : 0) +
-    (ispFilter !== 'all' ? 1 : 0) + (tagFilter.size > 0 ? 1 : 0);
-
   const Row = ({ index, style }) => {
     const row = rows[index];
     if (row.type === 'header') {
@@ -203,7 +165,7 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
     const a = row.agent;
     const status = statusOf(a);
     return (
-      <div style={{ ...style, paddingBottom: 4 }}>
+      <div style={{ ...style, paddingBottom: 5 }}>
         <div
           className={`agent-card ${selectedAgent?.id === a.id ? 'selected' : ''} ${a.banned ? 'is-banned' : ''}`}
           onClick={() => onSelect(a)}
@@ -217,19 +179,16 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
             <span className={`agent-badge ${status}`}>{status}</span>
           </div>
           <div className="agent-meta">
-            <span className="agent-os-line" title={osLabel(a)}>
-              <span className="agent-os-icon">{osIcon(a)}</span>
-              {a.ip_address || '0.0.0.0'}
-            </span>
-            <span className="agent-seen">seen {timeAgo(a.last_seen)}</span>
-          </div>
-          <div className="agent-actions" onClick={(e) => e.stopPropagation()}>
-            {a.banned ? (
-              <button className="agent-btn ok" title="Unban this agent" onClick={(e) => unbanAgent(e, a)}>Unban</button>
-            ) : (
-              <button className="agent-btn warn" title="Ban this agent" onClick={(e) => banAgent(e, a)}>Ban</button>
-            )}
-            <button className="agent-btn danger" title="Permanently remove this agent" onClick={(e) => deleteAgent(e, a)}>Delete</button>
+            <span className="agent-ip mono" title={a.ip_address}>{a.ip_address || '0.0.0.0'}</span>
+            <span className="agent-seen">seen {timeAgoShort(a.last_seen)}</span>
+            <div className="agent-actions" onClick={(e) => e.stopPropagation()}>
+              {a.banned ? (
+                <button className="agent-btn ok" title="Unban this agent" onClick={(e) => unbanAgent(e, a)}>Unban</button>
+              ) : (
+                <button className="agent-btn warn" title="Ban this agent" onClick={(e) => banAgent(e, a)}>Ban</button>
+              )}
+              <button className="agent-btn danger" title="Permanently remove this agent" onClick={(e) => deleteAgent(e, a)}>Delete</button>
+            </div>
           </div>
         </div>
       </div>
@@ -260,71 +219,11 @@ function AgentList({ agents, selectedAgent, onSelect, onAgentsChanged, tags = []
           <option value="country">Country</option>
           <option value="os">OS</option>
         </select>
-        <button
-          className={`btn-ghost btn-small al-filter-btn ${activeFilterCount ? 'active' : ''}`}
-          onClick={() => setFiltersOpen((v) => !v)}
-          title="Filters"
-        >
-          Filters{activeFilterCount ? ` (${activeFilterCount})` : ''}
-        </button>
       </div>
-
-      {filtersOpen && (
-        <div className="al-filters">
-          <div className="al-filter-row">
-            {STATUS_ORDER.map((s) => (
-              <label key={s} className={`al-chip ${statusFilter.has(s) ? 'on' : ''} ${s}`}>
-                <input
-                  type="checkbox"
-                  checked={statusFilter.has(s)}
-                  onChange={() => toggleSet(setStatusFilter)(s)}
-                />
-                {s} ({counts[s]})
-              </label>
-            ))}
-          </div>
-          <div className="al-filter-row">
-            <select value={osFilter} onChange={(e) => setOsFilter(e.target.value)} title="OS family">
-              <option value="all">OS: all</option>
-              <option value="windows">Windows</option>
-              <option value="linux">Linux</option>
-              <option value="macos">macOS</option>
-              <option value="android">Android</option>
-              <option value="other">Other</option>
-            </select>
-            <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)} title="Country">
-              <option value="all">Country: all</option>
-              {countries.map((c) => <option key={c} value={c}>{regionName(c)} ({c})</option>)}
-            </select>
-            <select value={ispFilter} onChange={(e) => setIspFilter(e.target.value)} title="ISP">
-              <option value="all">ISP: all</option>
-              {isps.map((i) => <option key={i} value={i}>{i === '—' ? 'Unknown ISP' : i}</option>)}
-            </select>
-          </div>
-          {tags.length > 0 && (
-            <div className="al-filter-row">
-              {tags.map((t) => (
-                <label key={t.id} className={`al-chip tag ${tagFilter.has(t.id) ? 'on' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={tagFilter.has(t.id)}
-                    onChange={() => toggleSet(setTagFilter)(t.id)}
-                  />
-                  <span className="te-dot" style={{ background: t.color || '#22d3ee' }} />
-                  {t.name}
-                </label>
-              ))}
-              {tagFilter.size > 0 && (
-                <button className="btn-ghost btn-small" onClick={() => setTagFilter(new Set())}>clear</button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="al-scroll" ref={containerRef}>
         {rows.length === 0 ? (
-          <div className="agent-empty">No agents match the current search / filters.</div>
+          <div className="agent-empty">No agents match the current search.</div>
         ) : (
           <VList
             ref={listRef}

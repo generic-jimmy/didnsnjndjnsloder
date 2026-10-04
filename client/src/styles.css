@@ -381,12 +381,17 @@ body.resizing .sidebar { transition: none; }
   border-radius: 10px;
 }
 .agent-card {
-  padding: 0.7rem 0.85rem;
+  padding: 0.38rem 0.55rem;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.15s;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  min-width: 0;
 }
 .agent-card:hover {
   border-color: var(--border-2);
@@ -442,21 +447,28 @@ body.resizing .sidebar { transition: none; }
 .agent-meta {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.25rem;
-  padding-left: calc(9px + 0.5rem);
+  gap: 0.4rem;
+  margin-top: 0.26rem;
   font-family: var(--mono);
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   color: var(--muted);
+  min-width: 0;
 }
-.agent-os {
-  margin-left: auto;
-  color: var(--muted);
-  white-space: nowrap;
+.agent-ip {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 110px;
+  white-space: nowrap;
 }
+.agent-meta .agent-seen {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-meta .agent-actions { flex: 0 0 auto; }
 
 /* ---------- Main panel ---------- */
 .main-panel {
@@ -768,9 +780,6 @@ body.resizing .sidebar { transition: none; }
   .stat-label { display: none; }
   .main-panel { padding: 0.7rem 0.8rem; gap: 0.8rem; }
   .sidebar-head { padding: 0.8rem 0.9rem; }
-  .agent-card { padding: 0.55rem 0.65rem; }
-  .agent-host { font-size: 0.82rem; }
-  .agent-meta { font-size: 0.66rem; }
 }
 
 @media (max-width: 992px) {
@@ -823,20 +832,17 @@ body.resizing .sidebar { transition: none; }
 .agent-card.is-banned { border-style: dashed; }
 .stat-value.banned { color: var(--amber); }
 
-/* ---------- agent list: flag, os, last seen, actions ---------- */
+/* ---------- agent list: flag, last seen, actions ----------
+   Actions are ALWAYS visible and inline with the IP row so Ban/Delete fit
+   even at the narrowest sidebar width — no more overlapping rows. */
 .agent-flag { font-size: 1rem; line-height: 1; filter: saturate(1.15); }
-.agent-os-line { display: inline-flex; align-items: center; gap: 0.3rem; }
-.agent-os-icon { font-size: 0.82rem; }
 .agent-seen { color: var(--muted); }
 .agent-actions {
-  display: flex; gap: 0.3rem; margin-top: 0.3rem; justify-content: flex-end;
-  opacity: 0; transition: opacity 0.12s ease;
+  display: flex; gap: 0.25rem; margin-left: auto;
 }
-.agent-card:hover .agent-actions,
-.agent-card.selected .agent-actions { opacity: 1; }
 .agent-btn {
-  font: 600 0.62rem var(--sans);
-  padding: 0.22rem 0.55rem;
+  font: 600 0.58rem var(--sans);
+  padding: 0.16rem 0.42rem;
   border-radius: 6px;
   border: 1px solid var(--border-2);
   background: var(--panel-2);
@@ -1009,7 +1015,6 @@ body.resizing .sidebar { transition: none; }
 @media (max-width: 768px) {
   .ad-grid { grid-template-columns: repeat(2, 1fr); }
   .ad-seen { width: 100%; margin-left: 0; }
-  .agent-actions { opacity: 1; }
 }
 
 /* ============================================================
@@ -1136,7 +1141,8 @@ body.resizing .sidebar { transition: none; }
 }
 .te-create-row input:focus { border-color: var(--accent); }
 .te-error { color: var(--red); font-size: 0.68rem; }
-.te-actions { display: flex; justify-content: flex-end; gap: 0.35rem; }
+.te-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem; }
+.te-hint { margin-right: auto; color: var(--muted); font: 500 0.6rem var(--mono); }
 
 /* ---------- smart agent list ---------- */
 .agent-list.smart { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
@@ -1161,38 +1167,6 @@ body.resizing .sidebar { transition: none; }
   color: var(--muted); font-size: 0.68rem; outline: none;
   max-width: 84px;
 }
-.al-filter-btn.active { color: var(--accent); border-color: rgba(34, 211, 238, 0.5); }
-.al-filters {
-  display: flex; flex-direction: column; gap: 0.3rem;
-  padding: 0.35rem 0.55rem 0.5rem;
-  border-bottom: 1px solid var(--border);
-  background: rgba(7, 11, 18, 0.25);
-}
-.al-filter-row { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; }
-.al-filter-row select {
-  padding: 0.22rem 0.35rem;
-  background: rgba(7, 11, 18, 0.6);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted); font-size: 0.64rem; outline: none;
-  max-width: 150px;
-}
-.al-chip {
-  display: inline-flex; align-items: center; gap: 0.25rem;
-  font: 600 0.6rem var(--sans);
-  letter-spacing: 0.04em;
-  padding: 0.16rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid var(--border-2);
-  background: rgba(7, 11, 18, 0.4);
-  color: var(--muted);
-  cursor: pointer;
-}
-.al-chip input { display: none; }
-.al-chip.on.online { color: var(--green); border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.1); }
-.al-chip.on.offline { color: var(--red); border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.1); }
-.al-chip.on.banned { color: var(--amber); border-color: rgba(251, 191, 36, 0.55); background: rgba(251, 191, 36, 0.1); }
-.al-chip.tag.on { color: var(--text); border-color: var(--accent); }
 .al-scroll { flex: 1; min-height: 0; }
 .al-vlist { overflow-y: auto; }
 .al-vlist::-webkit-scrollbar { width: 8px; }
@@ -1314,14 +1288,30 @@ body.resizing .sidebar { transition: none; }
 .kpi-card.amber .kpi-value { color: var(--amber); }
 .kpi-card.accent .kpi-value { color: var(--accent); }
 
-.fleet-map-wrap {
+/* compact fleet layout: map + charts BESIDE each other, one screen, no scroll */
+.fleet-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(250px, 1fr);
+  gap: 0.6rem;
+  align-items: stretch;
+}
+.fleet-map-card {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.5rem;
-  min-height: 260px;
+  padding: 0.35rem;
+  height: clamp(240px, 33vh, 330px);
+  overflow: hidden;
+  min-width: 0;
 }
+.fleet-map-card svg { display: block; }
+.fleet-side {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  min-width: 0; min-height: 0;
+}
+.fleet-side .fleet-chart-card { flex: 1; min-height: 0; }
+.fleet-timeline { flex-shrink: 0; }
 .fleet-map-loading {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1375,4 +1365,46 @@ body.resizing .sidebar { transition: none; }
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--muted); font-size: 0.64rem; outline: none;
+}
+
+/* ============================================================
+   v4 — responsive pass: fleet one-screen layout + small screens
+   ============================================================ */
+
+/* fleet: stack map over charts when the viewport narrows */
+@media (max-width: 1100px) {
+  .fleet-grid { grid-template-columns: 1fr; }
+  .fleet-map-card { height: clamp(220px, 30vh, 300px); }
+  .fleet-side { flex-direction: row; }
+  .fleet-side .fleet-chart-card { flex: 1; min-width: 0; }
+}
+
+/* fleet: charts stack vertically again on narrow screens */
+@media (max-width: 680px) {
+  .fleet-side { flex-direction: column; }
+  .kpi-row { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+  .kpi-value { font-size: 1.1rem; }
+  .fleet-export { margin-left: 0; }
+  .fleet-export-label { display: none; }
+}
+
+/* small screens: topbar + details tighten up */
+@media (max-width: 560px) {
+  .topbar { gap: 0.45rem; }
+  .view-tabs { order: 10; }
+  .view-tab { padding: 0.22rem 0.55rem; font-size: 0.62rem; }
+  .stat { padding: 0.25rem 0.45rem; }
+  .agent-details { padding: 0.45rem 0.5rem; }
+  .ad-grid { grid-template-columns: 1fr; }
+  .ad-title-row { gap: 0.35rem; }
+  .ad-hostname { font-size: 0.84rem; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* console workspace: agent cards never overflow their virtual rows */
+@media (max-width: 480px) {
+  .agent-card { padding: 0.34rem 0.45rem; }
+  .agent-meta { font-size: 0.6rem; }
+  .agent-btn { padding: 0.16rem 0.36rem; }
+  .agent-host { font-size: 0.74rem; }
 }

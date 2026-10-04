@@ -33,15 +33,18 @@ export function regionName(code) {
   }
 }
 
-// OS family -> emoji icon. Falls back gracefully for unknown/legacy agents.
+// OS family -> icon glyph. IMPORTANT: use glyphs that ship with core Windows
+// fonts. The Windows-logo emoji (U+1FA9F) is Unicode 13 — Windows 10 has no
+// glyph for it and renders a tofu box, so we use "⊞" (squared plus, in
+// Segoe UI Symbol since forever) which looks like the Windows flag.
 export function osIcon(agent) {
   const hay = `${agent?.os_name || ''} ${agent?.os_version || ''} ${agent?.platform || ''}`.toLowerCase();
-  if (hay.includes('windows') || agent?.os_name === 'windows') return '🪟';
+  if (hay.includes('windows') || agent?.os_name === 'windows') return '⊞';
   if (hay.includes('mac') || hay.includes('darwin') || hay.includes('osx') || agent?.os_name === 'macos') return '🍎';
   if (hay.includes('android') || agent?.os_name === 'android') return '🤖';
   if (hay.includes('linux') || hay.includes('ubuntu') || hay.includes('debian') || hay.includes('centos') ||
       hay.includes('kali') || hay.includes('fedora') || hay.includes('arch') || agent?.os_name === 'linux') return '🐧';
-  return '💠';
+  return '◈';
 }
 
 export function osLabel(agent) {
@@ -86,4 +89,20 @@ export function fullDate(value) {
   if (!value) return '—';
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+// Compact relative time for tight UI slots (agent cards). Never falls back to
+// the long locale string ("10/2/2026, 3:41:00 PM") — that overflows narrow
+// cards and pushes the Ban/Delete buttons out. Full date stays on the tooltip.
+export function timeAgoShort(value) {
+  if (!value) return 'never';
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return 'never';
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }

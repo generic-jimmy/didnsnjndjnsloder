@@ -226,10 +226,11 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 // Serve static files from the React build (client/dist)
-// Supports both local dev (server/../client/dist) and Docker (/app/client/dist)
+// Priority: CLIENT_DIST_PATH env override > Docker /app/client/dist > ../client/dist
 const devDistPath = path.join(__dirname, '..', 'client', 'dist');
 const containerDistPath = path.join(__dirname, 'client', 'dist');
-const clientDistPath = fs.existsSync(containerDistPath) ? containerDistPath : devDistPath;
+const clientDistPath = process.env.CLIENT_DIST_PATH ||
+  (fs.existsSync(containerDistPath) ? containerDistPath : devDistPath);
 app.use(express.static(clientDistPath));
 
 // ---------- Authentication ----------
